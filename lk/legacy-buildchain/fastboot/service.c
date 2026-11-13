@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT
- * Serialized, polled Fastboot 0.4. Each call queues one USB request, consumes
+ * Serialized, polled Fastboot 0.4. Each step queues one USB request, consumes
  * one completion, or writes and compares one storage chunk. No host wait loop,
  * heap, display, filesystem access or persistent slot selection.
  */
@@ -7,10 +7,10 @@
 #include "flash.h"
 #include "LkFastboot.h"
 
-enum { IDLE, RX_COMMAND, TX_REPLY, RX_DATA, FLASH_IMAGE, PROBE_OUTPUT };
+enum { IDLE, RX_COMMAND, TX_REPLY, RX_DATA, FLASH_IMAGE, PROBE_OUTPUT, RECOVER };
 struct fb_state {
     unsigned active, phase, next_phase, queued, action, tx_bytes, queue_bytes, connected;
-    uint64_t deadline, expected, received, downloaded, offset;
+    uint64_t deadline, link_deadline, expected, received, downloaded, offset;
     unsigned output_count, output_index, output_overflow, probe_result;
     char name[36];
     uint8_t tx[64] __attribute__((aligned(64)));
@@ -127,24 +127,41 @@ static void reset_parser(void) {
     s->deadline=lk_fb_native.clock_ms()+30000;
 }
 static void stop(void) { lk_fb_native.stop();s->active=0;s->connected=0;s->queued=0;s->downloaded=0; }
-uint64_t lk_fb_service(uint64_t operation) {
+/* Drain/cancel DMA before forgetting its buffer or accepting a new command.
+ * Keep the service requested: a transport fault must not permanently disable
+ * USB while the menu continues running. Give the host a real disconnect. */
+static uint64_t recover(void) {
+    stop();reset_parser();s->active=1;s->phase=RECOVER;
+    s->deadline=lk_fb_native.clock_ms()+250;
+    return 0;
+}
+static uint64_t service_step(uint64_t operation) {
     if(operation==W202_LK_FB_START) {
         if(s->active) return 0;
         reset_parser();
-        if(lk_fb_native.start()) { stop();return UINT64_MAX; }
+        if(lk_fb_native.start()) return recover();
+        s->link_deadline=lk_fb_native.clock_ms()+5000;
         s->active=1;return 0;
     }
     if(operation==W202_LK_FB_STOP) { if(s->active) stop();return 0; }
     if(operation!=W202_LK_FB_POLL || !s->active) return UINT64_MAX;
+    if(s->phase==RECOVER) {
+        if(lk_fb_native.clock_ms()<s->deadline) return 0;
+        if(lk_fb_native.start()) {
+            lk_fb_native.stop();s->deadline=lk_fb_native.clock_ms()+1000;
+            return 0;
+        }
+        s->link_deadline=lk_fb_native.clock_ms()+5000;
+        reset_parser();return 0;
+    }
     lk_fb_native.poll();
-    if(!lk_fb_native.ready()) {
+    int ready=lk_fb_native.ready();
+    if(ready<=0) {
         /* A reset or unplug invalidates every in-flight download. */
-        if(s->connected) {
-            // This LK frees bulk requests on disconnect. Rebind once so a
-            // later SET_CONFIGURATION receives freshly allocated requests.
-            stop();
-            if(lk_fb_native.start()) return UINT64_MAX;
-            s->active=1;
+        if(s->connected || ready<0 || lk_fb_native.clock_ms()>=s->link_deadline) {
+            // Reset/aborted enumeration may leave no usable bulk requests.
+            // Rebind with backoff, including a host which never configured.
+            return recover();
         }
         reset_parser();return 0;
     }
@@ -177,14 +194,14 @@ uint64_t lk_fb_service(uint64_t operation) {
         unsigned actual=0;int status=lk_fb_native.complete(&actual);
         if(!status) {
             if(s->phase!=RX_COMMAND && lk_fb_native.clock_ms()>s->deadline) {
-                stop();reset_parser();return UINT64_MAX;
+                return recover();
             }
             return s->phase==RX_COMMAND?0:W202_LK_FB_BUSY;
         }
         s->queued=0;
-        if(status<0) { stop();return UINT64_MAX; }
+        if(status<0) return recover();
         if(s->phase==TX_REPLY) {
-            if(actual!=s->tx_bytes) { stop();return UINT64_MAX; }
+            if(actual!=s->tx_bytes) return recover();
             s->phase=s->next_phase;
             if(s->action) {
                 unsigned action=s->action;s->action=0;
@@ -218,11 +235,21 @@ uint64_t lk_fb_service(uint64_t operation) {
             s->expected-s->received<LK_FLASH_CHUNK?s->expected-s->received:LK_FLASH_CHUNK;
         s->queue_bytes=bytes;
         if(lk_fb_native.queue(s->phase==TX_REPLY,s->phase==TX_REPLY?s->tx:s->io,bytes)) {
-            stop();return UINT64_MAX;
+            return recover();
         }
         s->queued=1;
     }
     return s->phase==RX_COMMAND?0:W202_LK_FB_BUSY;
+}
+uint64_t lk_fb_service(uint64_t operation) {
+    uint64_t started=lk_fb_native.clock_ms(),result;
+    /* Amortize the expensive LK/EFI address-space/cache switch. USB makes
+     * progress in bounded bursts; never wait here for the host to send data. */
+    for(unsigned i=0;;++i) {
+        result=service_step(operation);
+        if(operation!=W202_LK_FB_POLL || result!=W202_LK_FB_BUSY ||
+           i==31 || lk_fb_native.clock_ms()-started>=1) return result;
+    }
 }
 void lk_fb_prepare(void) {
     volatile uint8_t *p=(void *)s;

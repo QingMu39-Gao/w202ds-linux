@@ -97,6 +97,36 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(uc.reg_read(R('x0')),(result if el==8 else -1)&0xffffffffffffffff)
         self.assertEqual(calls,[operation] if el==8 else [])
 
+    def test_reset_reason_arms_watchdog_before_return_to_uefi(self):
+        for bootloader,reason in [(0,0x40),(1,0x30)]:
+            with self.subTest(bootloader=bootloader):
+                u=Uc(UC_ARCH_ARM64,UC_MODE_ARM)
+                for address,size in [(0x86000000,0x10000),(0xb5000000,0x1000000),
+                                     (0xcc000000,0x10000)]:u.mem_map(address,size)
+                u.mem_write(0x86000000,self.image)
+                calls=[]
+                def step(uc,pc,size,data):
+                    args=[uc.reg_read(getattr(reg,f'UC_ARM64_REG_X{i}')) for i in range(3)]
+                    if pc==0xb506ce54:
+                        self.assertEqual(args[0],0x644223ac)
+                        calls.append('read');value=0x123456ab
+                    elif pc==0xb506cf70:
+                        self.assertEqual(args,[0x644223ac,0x12345600|reason,1])
+                        calls.append('write');value=0
+                    elif pc==0xb5093220:
+                        self.assertEqual(args[0],1000)
+                        calls.append('watchdog');value=0
+                    else:return
+                    uc.reg_write(reg.UC_ARM64_REG_X0,value)
+                    uc.reg_write(reg.UC_ARM64_REG_PC,uc.reg_read(reg.UC_ARM64_REG_X30))
+                u.hook_add(UC_HOOK_CODE,step)
+                u.reg_write(reg.UC_ARM64_REG_SP,0xcc00f000)
+                u.reg_write(reg.UC_ARM64_REG_X30,0xcc001000)
+                u.reg_write(reg.UC_ARM64_REG_X0,bootloader)
+                u.emu_start(self.symbols['reset_reason'],0xcc001000,count=1000)
+                self.assertEqual(u.reg_read(reg.UC_ARM64_REG_PC),0xcc001000)
+                self.assertEqual(calls,['read','write','watchdog'])
+
     def test_status_thunk_uses_only_four_byte_aligned_native_accesses(self):
         u=Uc(UC_ARCH_ARM64,UC_MODE_ARM)
         u.mem_map(0xb500e000,0x1000)

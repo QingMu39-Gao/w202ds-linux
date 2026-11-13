@@ -7,14 +7,15 @@
 #define LK_FASTBOOT_TEST
 #include "service.c"
 
-uint8_t test_download[65536];
+uint8_t test_download[0x600000];
 static uint8_t partition[32768], image[32768], other_slot[32768];
 static void *pending;
 static unsigned pending_bytes, pending_tx, done, actual, writes, reads, stops;
 static unsigned mismatch, fail_write, fail_read, fail_queue, link_ready=1, bootloader;
 static uint64_t now;
-static int start(void) { return 0; }
-static void stop_usb(void) { ++stops;pending=NULL; }
+static unsigned starts,fail_start,fail_complete;
+static int start(void) { ++starts;return fail_start?-1:0; }
+static void stop_usb(void) { ++stops;pending=NULL;done=0; }
 static void poll(void) {}
 static int ready(void) { return link_ready; }
 static int queue(unsigned tx,void *p,unsigned n) {
@@ -23,6 +24,7 @@ static int queue(unsigned tx,void *p,unsigned n) {
 }
 static int queue_int(int tx,void *p,unsigned n) { return queue(tx,p,n); }
 static int complete(unsigned *n) {
+    if(fail_complete) return -1;
     if(!done) return 0;
     *n=actual;done=0;pending=NULL;return 1;
 }
@@ -73,7 +75,7 @@ static void download(void) {
 }
 static void reset(void) {
     lk_fb_service(W202_LK_FB_STOP);lk_fb_prepare();
-    mismatch=fail_read=fail_write=fail_queue=done=0;pending=NULL;link_ready=1;
+    mismatch=fail_read=fail_write=fail_queue=fail_start=fail_complete=done=0;pending=NULL;link_ready=1;
     writes=reads=0;memset(partition,0,sizeof(partition));
     assert(lk_fb_service(W202_LK_FB_START)==0);
 }
@@ -109,10 +111,11 @@ int main(void) {
     reset();download();fail_read=1;send_command("flash:boot_b");response("FAIL");
     assert(writes==1 && reads==1);
     reset();send_command("download:00008000");response("DATA");
-    send_bytes(image,512);link_ready=0;pending=NULL;done=0;tick();link_ready=1;
+    send_bytes(image,512);link_ready=0;pending=NULL;done=0;tick();link_ready=1;now+=251;tick();
     send_command("flash:boot_b");response("FAIL");assert(!writes);
     reset();send_command("download:00008000");response("DATA");wait_queue(0);
-    now+=31000;assert(tick()==UINT64_MAX);assert(!s->active && !s->downloaded);
+    now+=31000;assert(tick()==0);assert(s->active && s->phase==RECOVER && !s->downloaded);
+    now+=251;tick();send_command("getvar:version");response("OKAY0.4");
     reset();send_command("download:00000001");response("DATA");
     wait_queue(0);pending_bytes=512;memset(pending,0,512);actual=512;done=1;tick();
     response("FAIL");assert(!s->downloaded);
@@ -120,7 +123,8 @@ int main(void) {
     send_command("reboot");assert(response("OKAY")==W202_LK_FB_REBOOT && bootloader==0);
     send_command("continue");assert(response("OKAY")==W202_LK_FB_CONTINUE);
     reset();send_bytes("flash:boot_b\0bad",16);response("FAIL");assert(!writes);
-    reset();fail_queue=1;assert(tick()==UINT64_MAX && !s->active);
+    reset();fail_queue=1;assert(tick()==0 && s->active && s->phase==RECOVER);
+    fail_queue=0;now+=251;tick();send_command("getvar:version");response("OKAY0.4");
     reset();send_command("download:00000200");response("DATA");
     send_bytes(image,512);response("OKAY");
     send_command("oem jump-rmk :probe");
@@ -134,6 +138,33 @@ int main(void) {
     response("INFO");response("INFO");response("FAIL");probe_failure=0;
     reset();s->output_count=PROBE_LINES;
     lk_fb_capture_status("INFO","overflow");assert(s->output_overflow);
+    /* Start failure, completion failure, short TX and a same-poll reset
+     * must all recover without a caller issuing START a second time. */
+    reset();wait_queue(0);fail_complete=1;assert(tick()==0 && s->phase==RECOVER);
+    fail_complete=0;fail_start=1;now+=251;unsigned before=starts;tick();
+    assert(starts==before+1 && s->phase==RECOVER && !pending);
+    now+=500;tick();assert(starts==before+1);
+    fail_start=0;now+=501;tick();send_command("getvar:version");response("OKAY0.4");
+    reset();send_command("getvar:version");wait_queue(1);actual=1;done=1;
+    assert(tick()==0 && s->phase==RECOVER);now+=251;tick();
+    send_command("getvar:version");response("OKAY0.4");
+    reset();link_ready=(unsigned)-1;assert(tick()==0 && s->phase==RECOVER);
+    link_ready=1;now+=251;tick();send_command("getvar:version");response("OKAY0.4");
+    reset();send_command("download:00008000");response("DATA");send_bytes(image,512);
+    link_ready=0;tick();lk_fb_service(W202_LK_FB_STOP);now+=1000;
+    assert(lk_fb_service(W202_LK_FB_POLL)==UINT64_MAX && !s->active);
+    reset();send_command("download:00500000");response("DATA00500000");
+    for(unsigned off=0;off<0x500000;off+=LK_FLASH_CHUNK) send_bytes(image,LK_FLASH_CHUNK);
+    response("OKAY");assert(s->downloaded==0x500000 && !writes);
+    for(unsigned off=0;off<0x500000;off+=LK_FLASH_CHUNK)
+        assert(!memcmp(test_download+off,image,LK_FLASH_CHUNK));
+    lk_fb_service(W202_LK_FB_STOP);fail_start=1;
+    assert(lk_fb_service(W202_LK_FB_START)==0 && s->phase==RECOVER);
+    fail_start=0;now+=251;tick();send_command("getvar:version");response("OKAY0.4");
+    reset();link_ready=0;before=starts;now+=5001;tick();
+    assert(s->phase==RECOVER && starts==before);
+    now+=251;tick();assert(starts==before+1);
+    link_ready=1;send_command("getvar:version");response("OKAY0.4");
     puts("Fastboot asynchronous download, full flash, exact slot, readback and fault cases passed");
     return 0;
 }

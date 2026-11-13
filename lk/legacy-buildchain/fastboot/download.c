@@ -23,7 +23,12 @@ void lk_debug_download_raw(const char *arg, void *unused, uint64_t size)
     }
     if(tx(response,sizeof(response))!=(int)sizeof(response) ||
        rx((void *)(uintptr_t)image[0],bytes)!=(int)bytes) {
-        reply("FAIL","incomplete RAM download");return;
+        /* The link may already be gone. Sending FAIL here queues another
+         * transfer on that dead session and leaves the command parser live.
+         * Tear down once, then let the native offline loop rebind USB. */
+        ((int (*)(void))0xb5085770)();
+        *(volatile uint32_t *)(uintptr_t)0xb5122040=3; /* STATE_ERROR */
+        return;
     }
     image[2]=bytes;
     reply("OKAY","");

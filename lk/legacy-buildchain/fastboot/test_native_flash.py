@@ -15,7 +15,8 @@ class NativeFlashTest(unittest.TestCase):
         cls.symbols=json.loads((build/'manifest.json').read_text())['symbols']
 
     def run_handler(self,download=False,name='uboot_b',size=32768,capacity=32768,
-                    mismatch=False,write_error=False,read_error=False,short=False,sparse=False):
+                    mismatch=False,write_error=False,read_error=False,short=False,sparse=False,
+                    tx_error=False,rx_error=False):
         u=Uc(UC_ARCH_ARM64,UC_MODE_ARM)
         for a,n in [(0xb5000000,0x1000000),(0x86000000,0x10000),
                     (0x8a000000,0x1000),(0xb6001000,0x1000)]:u.mem_map(a,n)
@@ -25,7 +26,7 @@ class NativeFlashTest(unittest.TestCase):
         if sparse:payload=b'\x3a\xff\x26\xed'+payload[4:]
         u.mem_write(0x86000000,payload)
         u.mem_write(0xb5122048,struct.pack('<QQQ',0x86000000,0x10000,99))
-        result={'write':0,'read':0,'reply':[],'tx':[]}
+        result={'write':0,'read':0,'reply':[],'tx':[],'usb_exit':0}
         storage=bytearray(capacity)
         callee={getattr(reg,f'UC_ARM64_REG_X{i}'):0x70000+i for i in range(18,31)}
         callee[reg.UC_ARM64_REG_X30]=0xb6001000
@@ -62,10 +63,12 @@ class NativeFlashTest(unittest.TestCase):
             elif pc==0xb500e11c:
                 result['reply'].append((text(args[0]),text(args[1])));ret()
             elif pc==0xb5081864:
-                result['tx'].append(bytes(u.mem_read(args[0],args[1])));ret(args[1])
+                result['tx'].append(bytes(u.mem_read(args[0],args[1])));ret(-110 if tx_error else args[1])
             elif pc==0xb5081638:
                 self.assertTrue(download)
-                self.assertEqual(args[:2],[0x86000000,size]);ret(size-1 if short else size)
+                self.assertEqual(args[:2],[0x86000000,size]);ret(-110 if rx_error else size-1 if short else size)
+            elif pc==0xb5085770:
+                result['usb_exit']+=1;ret()
         u.hook_add(UC_HOOK_CODE,native)
         offset=0xe750 if download else 0x100d4
         u.emu_start(0xb5000000+offset-512,0xb6001000,count=1000000)
@@ -73,6 +76,7 @@ class NativeFlashTest(unittest.TestCase):
         self.assertEqual(u.reg_read(reg.UC_ARM64_REG_SP),0xb5e00000)
         for r,v in callee.items():self.assertEqual(u.reg_read(r),v)
         result['size']=struct.unpack('<Q',bytes(u.mem_read(0xb5122058,8)))[0]
+        result['state']=struct.unpack('<I',bytes(u.mem_read(0xb5122040,4)))[0]
         result['storage']=bytes(storage)
         return result
 
@@ -100,6 +104,14 @@ class NativeFlashTest(unittest.TestCase):
         self.assertEqual(s['reply'],[('OKAY','')])
         self.assertEqual(s['size'],32768)
         s=self.run_handler(download=True,short=True)
-        self.assertEqual(s['reply'][0][0],'FAIL');self.assertEqual(s['size'],0)
+        self.assertEqual(s['reply'],[]);self.assertEqual(s['size'],0)
+        self.assertEqual((s['usb_exit'],s['state']),(1,3))
+
+    def test_dead_download_link_rebinds_without_reply_or_storage(self):
+        for failure in [dict(tx_error=True),dict(rx_error=True)]:
+            with self.subTest(failure=failure):
+                s=self.run_handler(download=True,**failure)
+                self.assertEqual(s['reply'],[])
+                self.assertEqual((s['usb_exit'],s['state'],s['size'],s['write']),(1,3,0,0))
 
 if __name__=='__main__':unittest.main()

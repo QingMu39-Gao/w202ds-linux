@@ -12,10 +12,14 @@ MAGIC = b'LKDBG001'
 HOOK_OFFSET, OEM_OFFSET, DISPATCH_OFFSET = 0xe3d0, 0x11410, 0x6870
 FASTBOOT_OFFSET, DOWNLOAD_OFFSET = 0x12c80, 0xe750
 FLASH_OFFSET = 0x100d4
+READ_OFFSET, WRITE_OFFSET, USB_EVENTS_OFFSET = 0x81838, 0x81a64, 0x84058
+UNBIND_OFFSET = 0x80de0
 WATCHDOG, USB_RECOVERY, SDK_OEM, SCREEN, FLASH = 1, 2, 4, 8, 16
 ORIGINALS = {HOOK_OFFSET: 0xa9bd7bfd, OEM_OFFSET: 0xd10e83ff,
              DISPATCH_OFFSET: 0xd63f0000, FASTBOOT_OFFSET: 0xa9af7bfd,
-             DOWNLOAD_OFFSET: 0xa9b07bfd, FLASH_OFFSET: 0xa9b67bfd}
+             DOWNLOAD_OFFSET: 0xa9b07bfd, FLASH_OFFSET: 0xa9b67bfd,
+             READ_OFFSET: 0xa9bb7bfd, WRITE_OFFSET: 0xa9bd7bfd,
+             USB_EVENTS_OFFSET: 0x528040c2, UNBIND_OFFSET: 0xa9be7bfd}
 
 
 def sha(data):
@@ -29,7 +33,7 @@ def branch(pc, target, *, link=False):
     return (0x94000000 if link else 0x14000000) | ((delta >> 2) & 0x3ffffff)
 
 
-def patches(flags, jump, oem, dispatch, fastboot=0, download=0, flash=0):
+def patches(flags, jump, oem, dispatch, fastboot=0, download=0, flash=0, read=0, write=0, unbind=0):
     result = {OEM_OFFSET: branch(LK + OEM_OFFSET - 512, oem)}
     if flags & (WATCHDOG | SCREEN):
         result[HOOK_OFFSET] = branch(LK + HOOK_OFFSET - 512, jump)
@@ -41,6 +45,13 @@ def patches(flags, jump, oem, dispatch, fastboot=0, download=0, flash=0):
         result[DOWNLOAD_OFFSET] = branch(LK + DOWNLOAD_OFFSET - 512, download)
     if flags & FLASH:
         result[FLASH_OFFSET] = branch(LK + FLASH_OFFSET - 512, flash)
+    if read and write:
+        result[READ_OFFSET] = branch(LK + READ_OFFSET - 512, read)
+        result[WRITE_OFFSET] = branch(LK + WRITE_OFFSET - 512, write)
+        # The pinned DWC3 driver masks disconnect events (0x206). Without
+        # bit 0 an unplug can leave config and in-flight DMA falsely live.
+        result[USB_EVENTS_OFFSET] = 0x528040e2  # mov w2,#0x207
+        result[UNBIND_OFFSET] = branch(LK + UNBIND_OFFSET - 512, unbind)
     return result
 
 
@@ -52,9 +63,9 @@ def validate(data):
         return {'kind': 'legacy-ramlk', 'watchdog': False, 'usb_recovery': False,
                 'sdk_oem': False, 'screen': False, 'fastboot_flash': False, 'watchdog_ms': None}
     magic, version, flags, timeout, count, jump, oem, dispatch, digest = CONFIG.unpack_from(data, HEADER_OFFSET)
-    if (magic != MAGIC or version not in (1, 2, 3) or flags & ~31 or not flags & SDK_OEM or
-            (version != 3 and bool(flags & SCREEN) != (version == 2)) or
-            bool(flags & FLASH) != (version == 3) or
+    if (magic != MAGIC or version not in (1, 2, 3, 4) or flags & ~31 or not flags & SDK_OEM or
+            (version < 3 and bool(flags & SCREEN) != (version == 2)) or
+            bool(flags & FLASH) != (version >= 3) or
             not 1000 <= timeout <= 180000 or not 0 < count <= CODE_LIMIT - CODE_OFFSET):
         raise ValueError('unknown or corrupt minimal-LK configuration')
     low = LK + CODE_OFFSET - 512
@@ -65,16 +76,19 @@ def validate(data):
     flash = struct.unpack_from('<I', data, config_end)[0] if flags & FLASH else 0
     if flags & FLASH:
         config_end += 4
+    read, write, unbind = struct.unpack_from('<III', data, config_end) if version >= 4 else (0, 0, 0)
+    if version >= 4:
+        config_end += 12
     if not flags & SCREEN and fastboot:
         raise ValueError('unexpected screen entry')
     entries = ((jump, oem, dispatch) + ((fastboot,) if flags & SCREEN else ()) +
                ((download,) if flags & (SCREEN | FLASH) else ()) +
-               ((flash,) if flags & FLASH else ()))
+               ((flash,) if flags & FLASH else ()) + ((read,write,unbind) if version >= 4 else ()))
     if any(not low <= address < low + count or address % 4 for address in entries):
         raise ValueError('LK extension entry outside the verified code')
     if hashlib.sha256(data[CODE_OFFSET:CODE_OFFSET+count]).digest() != digest:
         raise ValueError('LK extension checksum mismatch')
-    expected = patches(flags, jump, oem, dispatch, fastboot, download, flash)
+    expected = patches(flags, jump, oem, dispatch, fastboot, download, flash, read, write, unbind)
     for offset, original in ORIGINALS.items():
         if struct.unpack_from('<I', data, offset)[0] != expected.get(offset, original):
             raise ValueError('LK extension branch/configuration mismatch')
@@ -90,6 +104,7 @@ def validate(data):
             'usb_recovery': bool(flags & USB_RECOVERY), 'sdk_oem': True,
             'screen': bool(flags & SCREEN),
             'fastboot_flash': bool(flags & FLASH),
+            'usb_transport_recovery': version >= 4,
             'watchdog_ms': timeout if flags & WATCHDOG else None,
             'code_bytes': count, 'code_sha256': digest.hex()}
 
@@ -105,7 +120,7 @@ def compose(base, code, symbols, *, watchdog=True, usb_recovery=True, screen=Fal
     jump, oem, dispatch = (symbols[n] for n in ('lk_debug_jump', 'lk_debug_oem', 'lk_debug_dispatch'))
     result = bytearray(base)
     result[HEADER_OFFSET:HEADER_OFFSET+CONFIG.size] = CONFIG.pack(
-        MAGIC, 3 if fastboot_flash else (2 if screen else 1), flags, watchdog_ms, len(code), jump, oem, dispatch, hashlib.sha256(code).digest())
+        MAGIC, 4 if fastboot_flash else (2 if screen else 1), flags, watchdog_ms, len(code), jump, oem, dispatch, hashlib.sha256(code).digest())
     fastboot = symbols['lk_debug_fastboot'] if screen else 0
     download = symbols['lk_debug_download'] if screen or fastboot_flash else 0
     if screen or fastboot_flash:
@@ -113,8 +128,14 @@ def compose(base, code, symbols, *, watchdog=True, usb_recovery=True, screen=Fal
     flash = symbols['lk_debug_flash'] if fastboot_flash else 0
     if fastboot_flash:
         struct.pack_into('<I', result, HEADER_OFFSET+CONFIG.size+SCREEN_CONFIG.size, flash)
+        struct.pack_into('<III', result, HEADER_OFFSET+CONFIG.size+SCREEN_CONFIG.size+4,
+                         symbols['lk_debug_usb_read'], symbols['lk_debug_usb_write'],
+                         symbols['lk_debug_usb_unbind'])
     result[CODE_OFFSET:CODE_OFFSET+len(code)] = code
-    for offset, word in patches(flags, jump, oem, dispatch, fastboot, download, flash).items():
+    for offset, word in patches(flags, jump, oem, dispatch, fastboot, download, flash,
+                               symbols.get('lk_debug_usb_read',0) if fastboot_flash else 0,
+                               symbols.get('lk_debug_usb_write',0) if fastboot_flash else 0,
+                               symbols.get('lk_debug_usb_unbind',0) if fastboot_flash else 0).items():
         struct.pack_into('<I', result, offset, word)
     validate(result)
     return bytes(result)

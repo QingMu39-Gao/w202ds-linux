@@ -14,6 +14,8 @@
 static void stop(void) {
     if(PTR(0xb50ffc20)) ((void (*)(void))0xb5085770)();
     PTR(0xb50ffc20)=0;
+    PTR(0x86408000+0x3f0)=0;
+    WORD(USB_STATE)=0;WORD(USB_STATE+4)=0;
 }
 static int start(void) {
     int (*const init)(unsigned)=(void *)0xb5085724;
@@ -22,17 +24,21 @@ static int start(void) {
     stop();
     for(unsigned i=0;i<0x58;++i) *(volatile uint8_t *)(uintptr_t)(FBDEV+i)=0;
     if(init(3)) { PTR(0xb50ffc20)=0;return -1; }
-    return bind((void *)0xb50ffb58);
+    if(bind((void *)0xb50ffb58)) { stop();return -1; }
+    return 0;
 }
 static void poll(void) { ((void (*)(void))0xb50857b4)(); }
 static int ready(void) {
     /* config, not network_started: native disconnect clears config only. */
-    return *(volatile uint8_t *)(uintptr_t)(FBDEV+0x18)!=0;
+    if(!*(volatile uint8_t *)(uintptr_t)(FBDEV+0x18)) return 0;
+    /* A reset and SET_CONFIGURATION may arrive in the same poll. The
+     * inherited driver frees requests on reset but does not reallocate them. */
+    return PTR(USB_STATE+0x48) && PTR(USB_STATE+0x50) ? 1 : -1;
 }
 static int queue(int tx,void *buffer,unsigned bytes) {
     uintptr_t ep=PTR(USB_STATE+(tx?0x28:0x30));
     uintptr_t req=PTR(USB_STATE+(tx?0x48:0x50));
-    if(!ep || !req) return -1;
+    if(ready()!=1 || !ep || !req) return -1;
     unsigned packet=*(uint16_t *)(ep+0x28);
     if(!packet || (packet&(packet-1)) || packet>1024) return -1;
     /* RX uses a rounded DMA length and the dedicated 16K IO buffer. The
@@ -46,10 +52,13 @@ static int queue(int tx,void *buffer,unsigned bytes) {
 }
 /* TX and RX share txn_done. service.c guarantees one outstanding request. */
 static int complete(unsigned *actual) {
+    uintptr_t request=PTR(0x86408000+0x3f0);
+    if(ready()!=1 || !request ||
+       (request!=PTR(USB_STATE+0x48) && request!=PTR(USB_STATE+0x50))) return -1;
     if(!WORD(USB_STATE+4)) return 0;
     if((int32_t)WORD(USB_STATE)<0) return -1;
     /* The completed req is selected by queue() in a reserved context word. */
-    *actual=WORD(PTR(0x86408000+0x3f0)+0x44);
+    *actual=WORD(request+0x44);
     return 1;
 }
 static int queue_record(int tx,void *buffer,unsigned bytes) {
@@ -66,6 +75,10 @@ static void reset_reason(unsigned bootloader) {
     uint32_t (*const read)(uint32_t)=(void *)0xb506ce54;
     void (*const write)(uint32_t,uint32_t,uint32_t)=(void *)0xb506cf70;
     write(0x644223ac,(read(0x644223ac)&~255u)|(bootloader?0x30:0x40),1);
+    /* PSCI reset can hang under the inherited UEFI context. Arm the same
+     * pinned hardware watchdog used by resident startup before returning
+     * ownership to UEFI; a non-returning SMC must not strand USB forever. */
+    ((void (*)(uint64_t))0xb5093220)(1000);
 }
 static void module_permissions(volatile uint64_t *entry,uint64_t value) {
     *entry=value;

@@ -29,7 +29,8 @@ def main():
     p.add_argument('--cross-compile', default='aarch64-linux-gnu-')
     a = p.parse_args()
     out = a.output.resolve()
-    require(out != REPO and REPO not in out.parents, 'output must be outside repository')
+    require(out != REPO and (REPO not in out.parents or REPO/'output' in out.parents),
+            'output must be outside source directories')
     require(not out.exists(), 'choose a fresh output directory')
     source = a.base.read_bytes()
     require(len(source) == 2258808 and sha(source) == MOD_SHA, 'incorrect tool-package uboot-mod.bin')

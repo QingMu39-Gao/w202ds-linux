@@ -28,7 +28,7 @@ def main():
     p.add_argument('--watchdog-ms', type=int, default=30000, help='payload timeout, 1000..180000 ms')
     a = p.parse_args()
     out = a.output.resolve()
-    if out == REPO or REPO in out.parents or out.exists():
+    if out == REPO or (REPO in out.parents and REPO/'output' not in out.parents) or out.exists():
         p.error('choose a fresh output directory outside the repository')
     if not 1000 <= a.watchdog_ms <= 180000:
         p.error('--watchdog-ms must be between 1000 and 180000')
@@ -61,7 +61,7 @@ def main():
             'lk_lcd_puts':0xb5087d98}
     run(a.cross_compile+'gcc', '-march=armv8-a', '-c', ROOT/'debug/screen.S', '-o', ext/'screen.o')
     if a.fastboot_flash:
-        for name in ('flash','download'):
+        for name in ('flash','download','transport'):
             run(a.cross_compile+'gcc', '-Os', '-Wall', '-Wextra', '-Werror', '-ffreestanding',
                 '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-mgeneral-regs-only',
                 '-fno-asynchronous-unwind-tables', '-ffixed-x18',
@@ -69,7 +69,7 @@ def main():
     run(a.cross_compile+'ld', '-T', ROOT/'debug/layout.ld',
         *(f'--defsym={name}={value:#x}' for name, value in defs.items()),
         ext/'hook.o', *((ext/'screen.o',) if screen else ()),
-        *((ext/'flash.o',ext/'download.o') if a.fastboot_flash else ()), '-o', ext/'hook.elf')
+        *((ext/'flash.o',ext/'download.o',ext/'transport.o') if a.fastboot_flash else ()), '-o', ext/'hook.elf')
     run(a.cross_compile+'objcopy', '-O', 'binary', '-j', '.text', ext/'hook.elf', ext/'hook.bin')
     listing = subprocess.check_output([a.cross_compile+'nm', '-n', str(ext/'hook.elf')], text=True)
     symbols = {line.split()[2]:int(line.split()[0],16) for line in listing.splitlines() if len(line.split())==3}
@@ -104,7 +104,7 @@ def main():
                ROOT/'debug/image.py', ROOT/'debug/probe.S', ROOT/'debug/memory.S', ROOT/'debug/memory.c',
                ROOT/'debug/screen.S', ROOT/'debug/screen-probe.S',
                ROOT/'ramboot/probes/probe.ld', ROOT/'ramlk/build.py', ROOT/'ramlk/hook.S']
-    sources += [ROOT/'fastboot'/name for name in ('flash.c','download.c','flash.h','native.h')]
+    sources += [ROOT/'fastboot'/name for name in ('flash.c','download.c','transport.c','flash.h','native.h')]
     report = {'schema':1, 'board':'w202ds', 'artifact':'lk-debuger.img',
               'bytes':len(data), 'sha256':hashlib.sha256(data).hexdigest(),
               'features':IMAGE['validate'](data), 'hardware_tested':False,
