@@ -17,7 +17,7 @@ typedef struct {
   UINT16 key;
 } STEP;
 #define KEY(k,ms) {.selected=0,.ns=NS_MS(ms),.key=(k)}
-#define TOUCH(xv,yv,b,ms) {.selected=1,.ns=NS_MS(ms),.x=(xv),.y=(yv),.buttons=(b)}
+#define TOUCH(xv,yv,b,ms) {.selected=1,.ns=NS_MS(ms),.x=(yv),.y=(1199-(xv)),.buttons=(b)}
 #define TICK(ms) {.selected=2,.ns=NS_MS(ms)}
 static EFI_GRAPHICS_OUTPUT_BLT_PIXEL pixels[1200*1920];
 static const STEP *steps,*current;
@@ -61,13 +61,13 @@ static EFI_STATUS EFIAPI Blit(EFI_GRAPHICS_OUTPUT_PROTOCOL *This,
   if(fail_blit==blits)return EFI_DEVICE_ERROR;
   if(Operation==EfiBltVideoFill) {
     ++fills;
-    if(Width!=32 || Height!=32 || DestinationX!=1152 || DestinationY!=96)++unexpected;
+    if(Width!=32 || Height!=32 || DestinationX!=1872 || DestinationY!=96)++unexpected;
   } else if(Operation!=EfiBltBufferToVideo || Buffer!=pixels ||
-      DestinationX+Width>1200 || DestinationY+Height>1920) ++unexpected;
+      DestinationX+Width>1920 || DestinationY+Height>1200) ++unexpected;
   return EFI_SUCCESS;
 }
 static EFI_GRAPHICS_OUTPUT_MODE_INFORMATION info={
-  .HorizontalResolution=1200,.VerticalResolution=1920,.PixelsPerScanLine=1200};
+  .HorizontalResolution=1920,.VerticalResolution=1200,.PixelsPerScanLine=1920};
 static EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE mode={.Info=&info};
 static EFI_GRAPHICS_OUTPUT_PROTOCOL gop={.Blt=Blit,.Mode=&mode};
 static EFI_STATUS EFIAPI Pointer(EFI_ABSOLUTE_POINTER_PROTOCOL *This,
@@ -79,7 +79,7 @@ static EFI_STATUS EFIAPI Pointer(EFI_ABSOLUTE_POINTER_PROTOCOL *This,
   State->CurrentX=current->x;State->CurrentY=current->y;State->CurrentZ=0;
   State->ActiveButtons=current->buttons;return EFI_SUCCESS;
 }
-static EFI_ABSOLUTE_POINTER_MODE pointer_mode={.AbsoluteMaxX=1199,.AbsoluteMaxY=1919};
+static EFI_ABSOLUTE_POINTER_MODE pointer_mode={.AbsoluteMaxX=1919,.AbsoluteMaxY=1199};
 static EFI_ABSOLUTE_POINTER_PROTOCOL pointer={
   .GetState=Pointer,.WaitForInput=TOUCH_EVENT,.Mode=&pointer_mode};
 static EFI_STATUS EFIAPI Key(EFI_SIMPLE_TEXT_INPUT_PROTOCOL *This,EFI_INPUT_KEY *Key) {
@@ -133,7 +133,7 @@ static VOID Scenario(const STEP *Steps,UINTN Count) {
   waits=reads=keys=blits=fills=allocations=frees=creates=closes=starts=stops=stalls=unexpected=0;
   timer_count=cancels=fail_blit=fail_timer=0;create_error=stop_error=EFI_SUCCESS;
 }
-static BOOLEAN InkAt(UINTN X,UINTN Y) {return pixels[Y*1200+X].Blue!=0;}
+static BOOLEAN InkAt(UINTN X,UINTN Y) {return pixels[(1199-X)*1920+Y].Blue!=0;}
 int main(void) {
   static const STEP idle[]={TICK(20),TICK(40),TICK(60),KEY(SCAN_ESC,70)};
   Scenario(idle,ARRAY_SIZE(idle));

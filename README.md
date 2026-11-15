@@ -11,10 +11,10 @@ w202ds-boot/
 
 ## 快速开始
 
-远端克隆并初始化两个组件子模块：
+远端克隆 `w202ds-linux` 的 `boot` 分支并初始化组件子模块：
 
 ```sh
-git clone --recursive https://github.com/Yeamika/w202ds-boot.git
+git clone --branch boot --recurse-submodules https://github.com/Yeamika/w202ds-linux.git w202ds-boot
 ```
 
 完整构建说明、组件查找顺序、ESP 源码布局和产物列表见
@@ -59,3 +59,9 @@ python3 -m unittest discover -s pocketjs4edk2_uefi/tests -p test_boot_partition.
 `build-firmware.py` 生成 `firmware-manifest.json`；独立 `build.py` 的清单为 `manifest.json`，校验时按对应入口选择。
 
 分区校验测试默认使用确定的文件夹具；设置 `W202_FIRMWARE_BUILD=/path/to/build/w202ds` 可改用完整构建产物。测试只读输入，在临时副本上做损坏检查，不刷写设备。
+
+## 当前 Linux 启动交接
+
+LinuxBoot 使用公共 `linux-efi` 配置解析器，启动目标由 ESP 中各启动项的 `linuxboot.conf` 指定；多个启动项可以共享内核并选择不同参数和根分区。显示交接与触控诊断使用相同的旋转约定，平台不再要求启动子程序前恢复旧显示模式。
+
+重建时固定 `components/` 和 LinuxBoot 公共代码的子模块提交，使用相同工具链及输入镜像。分别比较 EFI 应用、UEFI payload 与最终 LK 分区镜像的 SHA-256；最终镜像还依赖 LK 底包和构建选项，不能用不同输入验证一致性。模型测试不替代设备启动验收，固件构建不会自动刷写设备。

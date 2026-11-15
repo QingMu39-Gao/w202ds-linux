@@ -27,6 +27,7 @@
   ArmLib
   IoLib
   DebugLib
+  DevicePathLib
   FdtLib
   TimerLib
 [Protocols]

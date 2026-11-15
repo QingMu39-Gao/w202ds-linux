@@ -60,7 +60,7 @@ EFI_STATUS EFIAPI TouchScopeMain(EFI_HANDLE Image,EFI_SYSTEM_TABLE *Table) {
   if (!Touch || !Touch->WaitForInput || !Touch->Mode ||
       !Touch->Mode->AbsoluteMaxX || !Touch->Mode->AbsoluteMaxY) { Status=EFI_UNSUPPORTED; goto Done; }
   mWidth=Gop->Mode->Info->HorizontalResolution;mHeight=Gop->Mode->Info->VerticalResolution;
-  if (mWidth!=1200 || mHeight!=1920) {Status=EFI_UNSUPPORTED;goto Done;}
+  if (mWidth!=1920 || mHeight!=1200) {Status=EFI_UNSUPPORTED;goto Done;}
   mPixels=AllocateZeroPool(mWidth*mHeight*sizeof(*mPixels));
   if (!mPixels) {Status=EFI_OUT_OF_RESOURCES;goto Done;}
   Status=Gop->Blt(Gop,mPixels,EfiBltBufferToVideo,0,0,0,0,mWidth,mHeight,0);
