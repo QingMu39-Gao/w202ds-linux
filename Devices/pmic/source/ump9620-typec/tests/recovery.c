@@ -29,7 +29,7 @@ struct w202_typec {
     uint64_t reset_count, rearm_count;
 };
 static unsigned long jiffies;
-static int calls, fail_at;
+static int calls, fail_at, stop_error;
 static int io(void) { return ++calls == fail_at ? -EIO : 0; }
 static int regmap_update_bits(int map, unsigned int reg, int mask, int val)
 { (void)map; (void)reg; (void)mask; (void)val; return io(); }
@@ -39,10 +39,12 @@ static int w202_pd_flush(struct w202_typec *pd, bool ids)
 { assert(pd->lock && ids); return io(); }
 static void w202_pd_latch_fault(struct w202_typec *pd, const char *reason)
 { assert(pd->lock); pd->faulted = true; pd->fault_reason = reason; }
+static int w202_typec_stop_source(struct w202_typec *pd)
+{ assert(pd->lock); return stop_error; }
 #include "../recovery.c"
 static struct w202_typec fresh(void)
 {
-    calls = fail_at = 0;
+    calls = fail_at = stop_error = 0;
     jiffies = 100;
     return (struct w202_typec){ .lock = 1 };
 }
@@ -107,12 +109,22 @@ int main(void)
 
     pd = fresh(); pd.faulted = true; pd.fault_reason = "test";
     for (i = 1; i < 32; i++) {
+        if (i == 3) continue;
         assert(w202_pd_cc_event(&pd, BIT(1), i) == 0 && pd.faulted);
     }
     assert(w202_pd_cc_event(&pd, BIT(0), 0) == 0 && pd.faulted);
     assert(w202_pd_cc_event(&pd, 0, 0) == 0 && pd.faulted);
     assert(w202_pd_cc_event(&pd, BIT(1), 0x6000) == 1 && !pd.faulted);
     assert(!pd.reset_attempts && pd.rearm_count == 1);
-    puts("PASS: stock DETACHED_SNK event unlocks; attach/VBUS/other states do not");
+    pd.faulted = true;
+    assert(w202_pd_cc_event(&pd, BIT(1), 3) == 1 && !pd.faulted);
+    puts("PASS: sink/source detach unlocks; attach/VBUS/other states do not");
+
+    pd = fresh(); pd.faulted = true; stop_error = -EIO;
+    assert(w202_pd_cc_event(&pd, BIT(1), 3) == -EIO && pd.faulted);
+    assert(!pd.rearm_count && !calls);
+    stop_error = 0;
+    assert(w202_pd_cc_event(&pd, BIT(1), 3) == 1 && !pd.faulted);
+    puts("PASS: detach cannot rearm until source shutdown succeeds");
     return 0;
 }

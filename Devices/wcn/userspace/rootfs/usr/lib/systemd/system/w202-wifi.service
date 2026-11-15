@@ -1,0 +1,12 @@
+[Unit]
+Description=W202DS SC2355 PCIe Wi-Fi hardware
+After=local-fs.target systemd-udev-trigger.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/w202-wifi-start
+RemainAfterExit=yes
+TimeoutStartSec=45
+
+[Install]
+WantedBy=multi-user.target

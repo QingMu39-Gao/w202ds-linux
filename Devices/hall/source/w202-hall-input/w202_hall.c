@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* W202DS Hall input: stock GPIO binding, measured active-low lid switch. */
+/* W202DS Hall sensor: stock GPIO binding, measured active-low signal. */
 #include <linux/atomic.h>
 #include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
@@ -11,8 +11,15 @@
 #include <linux/of_gpio.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
+#include <linux/sysfs.h>
+
+/* The system integrator selects any input meaning; raw Hall is the default. */
+static int switch_code = -1;
+module_param(switch_code, int, 0444);
+MODULE_PARM_DESC(switch_code, "Optional EV_SW code (-1 exposes Hall state only)");
 
 struct w202_hall {
+	struct device *dev;
 	struct gpio_desc *line;
 	struct input_dev *input;
 	struct mutex report_lock;
@@ -26,8 +33,12 @@ static int w202_hall_report(struct w202_hall *hall)
 	mutex_lock(&hall->report_lock);
 	raw = gpiod_get_raw_value_cansleep(hall->line);
 	if (raw >= 0) {
-		input_report_switch(hall->input, SW_LID, !raw);
-		input_sync(hall->input);
+		if (hall->input) {
+			input_report_switch(hall->input, switch_code, !raw);
+			input_sync(hall->input);
+		}
+		sysfs_notify(&hall->dev->kobj, NULL, "raw_level");
+		sysfs_notify(&hall->dev->kobj, NULL, "active");
 	}
 	mutex_unlock(&hall->report_lock);
 	return raw < 0 ? raw : 0;
@@ -39,7 +50,7 @@ static irqreturn_t w202_hall_irq(int irq, void *data)
 
 	atomic64_inc(&hall->irq_count);
 	if (w202_hall_report(hall))
-		dev_err_ratelimited(&hall->input->dev, "Hall GPIO read failed\n");
+		dev_err_ratelimited(hall->dev, "Hall GPIO read failed\n");
 	return IRQ_HANDLED;
 }
 
@@ -53,7 +64,7 @@ static ssize_t raw_level_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(raw_level);
 
-static ssize_t closed_show(struct device *dev,
+static ssize_t active_show(struct device *dev,
 			  struct device_attribute *attr, char *buf)
 {
 	struct w202_hall *hall = dev_get_drvdata(dev);
@@ -61,7 +72,7 @@ static ssize_t closed_show(struct device *dev,
 
 	return raw < 0 ? raw : sysfs_emit(buf, "%d\n", !raw);
 }
-static DEVICE_ATTR_RO(closed);
+static DEVICE_ATTR_RO(active);
 
 static ssize_t irq_count_show(struct device *dev,
 			     struct device_attribute *attr, char *buf)
@@ -74,7 +85,7 @@ static DEVICE_ATTR_RO(irq_count);
 
 static struct attribute *w202_hall_attrs[] = {
 	&dev_attr_raw_level.attr,
-	&dev_attr_closed.attr,
+	&dev_attr_active.attr,
 	&dev_attr_irq_count.attr,
 	NULL,
 };
@@ -94,6 +105,9 @@ static int w202_hall_probe(struct platform_device *pdev)
 	struct w202_hall *hall;
 	int gpio, irq, result;
 
+	if (switch_code < -1 || switch_code > SW_MAX)
+		return dev_err_probe(dev, -EINVAL, "EV_SW code out of range\n");
+
 	/* The polarity was physically verified only on this exact W202DS line. */
 	result = of_parse_phandle_with_args(dev->of_node, "ah,gpio_irq",
 					  "#gpio-cells", 0, &args);
@@ -108,6 +122,7 @@ static int w202_hall_probe(struct platform_device *pdev)
 	hall = devm_kzalloc(dev, sizeof(*hall), GFP_KERNEL);
 	if (!hall)
 		return -ENOMEM;
+	hall->dev = dev;
 	mutex_init(&hall->report_lock);
 	atomic64_set(&hall->irq_count, 0);
 	platform_set_drvdata(pdev, hall);
@@ -139,16 +154,18 @@ static int w202_hall_probe(struct platform_device *pdev)
 	irq = gpiod_to_irq(hall->line);
 	if (irq < 0)
 		return dev_err_probe(dev, irq, "Hall IRQ unavailable\n");
-	hall->input = devm_input_allocate_device(dev);
-	if (!hall->input)
-		return -ENOMEM;
-	hall->input->name = "w202ds-hall";
-	hall->input->phys = "w202ds-hall/input0";
-	hall->input->id.bustype = BUS_HOST;
-	input_set_capability(hall->input, EV_SW, SW_LID);
-	result = input_register_device(hall->input);
-	if (result)
-		return dev_err_probe(dev, result, "Hall input registration failed\n");
+	if (switch_code >= 0) {
+		hall->input = devm_input_allocate_device(dev);
+		if (!hall->input)
+			return -ENOMEM;
+		hall->input->name = "w202ds-hall";
+		hall->input->phys = "w202ds-hall/input0";
+		hall->input->id.bustype = BUS_HOST;
+		input_set_capability(hall->input, EV_SW, switch_code);
+		result = input_register_device(hall->input);
+		if (result)
+			return dev_err_probe(dev, result, "Hall input registration failed\n");
+	}
 	result = devm_request_threaded_irq(dev, irq, NULL, w202_hall_irq,
 		IRQF_ONESHOT | IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING,
 		"w202ds-hall", hall);
@@ -157,7 +174,7 @@ static int w202_hall_probe(struct platform_device *pdev)
 	result = w202_hall_report(hall);
 	if (result)
 		return dev_err_probe(dev, result, "Initial Hall GPIO read failed\n");
-	dev_info(dev, "GPIO148 both-edge input; low=closed, high=open\n");
+	dev_info(dev, "GPIO148 both-edge Hall; low=active, EV_SW code=%d\n", switch_code);
 	return 0;
 }
 
@@ -178,4 +195,4 @@ static struct platform_driver w202_hall_driver = {
 module_platform_driver(w202_hall_driver);
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("W202DS GPIO148 Hall lid switch, event driven, verified active low");
+MODULE_DESCRIPTION("W202DS GPIO148 Hall sensor, event driven, verified active low");

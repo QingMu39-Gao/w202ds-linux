@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "rootfs": "output/userspace/camera/rootfs",
+  "required": [
+    "usr/libexec/w202-torch-control"
+  ],
+  "base": "project"
+}

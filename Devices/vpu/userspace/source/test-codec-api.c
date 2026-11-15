@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Native decoder lifecycle acceptance. No raw register writes or codec jobs.
- * Actual decoding is independently checked with test-vendor-avc and FFmpeg.
+ * Actual decoding must be checked through Media Request against software references.
  */
 #define _GNU_SOURCE
 #include <errno.h>

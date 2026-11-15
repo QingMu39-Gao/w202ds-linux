@@ -68,22 +68,21 @@ static void pj4edk_present(void)
 
 static void pj4edk_render(void)
 {
-	unsigned int col, x;
+	unsigned int col;
 	u64 start = ktime_get_mono_fast_ns(), elapsed;
 
 	pj4edk_draw_damage(&frame, &shadow, &damage);
-	for (col = 0; col < frame.cols; col++) {
-		unsigned int px, height;
-
-		if (!damage.end[col])
-			continue;
-		px = 1200 - frame.top - damage.end[col] * PJ4EDK_CELL_H;
-		height = (damage.end[col] - damage.first[col]) * PJ4EDK_CELL_H;
-		for (x = frame.left + col * PJ4EDK_CELL_W;
-		     x < frame.left + (col + 1) * PJ4EDK_CELL_W; x++) {
-			unsigned long address = (unsigned long)(frame.pixels + x * 1200 + px);
-
-			dcache_clean_poc(address, address + height * sizeof(u16));
+	/* Native landscape rows; DPU rotates the scanout, never the rasterizer. */
+	if (damage.cells) {
+		unsigned int first=frame.rows, end=0;
+		for (col=0; col<frame.cols; ++col) if (damage.end[col]) {
+			first=min(first,(unsigned int)damage.first[col]);
+			end=max(end,(unsigned int)damage.end[col]);
+		}
+		if (end>first) {
+			unsigned long address=(unsigned long)frame.pixels +
+				(frame.top+first*frame.cell_h)*frame.stride;
+			dcache_clean_poc(address,address+(end-first)*frame.cell_h*frame.stride);
 			cache_ranges++;
 		}
 	}
@@ -242,7 +241,7 @@ static int __init pj4edk_workers_init(void)
 		dpu = ioremap(0x31000000, 0x1000);
 		if (dpu && (readl(dpu) != 0x600 || readl(dpu + 0x18) != 0x078004b0 ||
 		    readl(dpu + 0x2c) != 1 || readl(dpu + 0x30) != 0xb0000000 ||
-		    (readl(dpu + 0x40) & 0x007000f0) != 0x00200040 || readl(dpu + 0x4c) != 1200)) {
+		    (readl(dpu + 0x40) & 0x007000f0) != 0x00100030 || readl(dpu + 0x4c) != 1920)) {
 			iounmap(dpu);
 			dpu = NULL;
 		}

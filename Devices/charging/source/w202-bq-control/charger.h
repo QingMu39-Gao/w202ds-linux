@@ -11,6 +11,7 @@
 #include <linux/workqueue.h>
 
 #define CHARGE_ENABLE BIT(4)
+#define OTG_ENABLE BIT(5)
 #define WATCHDOG_STROBE BIT(6)
 #define CHARGE_CURRENT_UA 1500000
 /* Stock Android fchg_cur=2.65 A, rounded down to the 60 mA register step. */
@@ -40,14 +41,23 @@ struct w202_bq {
 	unsigned int pps_retries;
 	atomic_t cable_detached;
 	bool auto_pps, pps_blocked, pps_exit_pending;
+	bool fast_charge_disabled;
 	bool pps_inhibited; /* Under lock: temporary gate, never the user request. */
 	bool stop_requested, slave, shutting_down, suspended, thermal_blocked, fault_latched;
+	bool otg_active, otg_saved_valid;
+	u8 otg_saved[5];
+	struct regulator_dev *vbus;
 };
 
 /* Private to this composite module. The *_locked helpers require bq->lock.
  * IRQ/extcon context schedules work; only process/work context performs I2C.
  */
 int w202_bq_stop_locked(struct w202_bq *bq);
+int w202_bq_otg_enter_locked(struct w202_bq *main, struct w202_bq *slave);
+int w202_bq_otg_exit_locked(struct w202_bq *main, struct w202_bq *slave);
+int w202_bq_register_otg(struct w202_bq *bq);
+void w202_bq_otg_monitor(struct w202_bq *bq);
+int w202_bq_otg_shutdown(struct w202_bq *bq);
 int w202_bq_update_locked(struct w202_bq *bq, int reg, int mask, int bits);
 int w202_bq_prepare_input_locked(struct w202_bq *bq);
 static inline int w202_bq_ovp_bits(const struct w202_bq *bq)

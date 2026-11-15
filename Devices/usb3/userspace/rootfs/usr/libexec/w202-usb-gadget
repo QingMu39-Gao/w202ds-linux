@@ -1,0 +1,166 @@
+#!/bin/sh
+# Keep the W202DS composite USB gadget available after switch_root.
+# The initramfs normally creates it first; this is an idempotent rootfs retry.
+set -eu
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+sysfs=${W202_SYSFS_ROOT:-/sys}
+
+# Addressing is selected by the rootfs integrator, independently of transport.
+USB_ADDRESS=
+USB_FUNCTIONS=${USB_FUNCTIONS:-acm,ncm}
+USB_ENABLED=${USB_ENABLED:-1}
+USB_GADGET_NAME=w202ds
+if [ -r /etc/default/w202-usb-gadget ]; then
+    . /etc/default/w202-usb-gadget
+fi
+
+log() {
+    if [ -w /dev/kmsg ]; then
+        printf '<6>w202-usb: %s\n' "$*" > /dev/kmsg
+    fi
+}
+
+case "$USB_GADGET_NAME" in ''|*[!a-zA-Z0-9_-]*) echo "Invalid gadget name" >&2; exit 2 ;; esac
+case "$USB_FUNCTIONS" in acm|ncm|acm,ncm) ;; *) echo "Invalid USB functions" >&2; exit 2 ;; esac
+case "$USB_ENABLED" in 0|1) ;; *) exit 2 ;; esac
+
+find_udc() {
+    for path in /sys/class/udc/*; do
+        if [ -e "$path" ]; then
+            printf '%s\n' "${path##*/}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+host_mode() {
+    for role in "$sysfs"/class/usb_role/*/role; do
+        [ -r "$role" ] || continue
+        [ "$(cat "$role")" != host ] || return 0
+    done
+    return 1
+}
+
+mount_configfs() {
+    mkdir -p /sys/kernel/config
+    if ! grep -qs ' /sys/kernel/config ' /proc/mounts; then
+        mount -t configfs configfs /sys/kernel/config 2>/dev/null || return 1
+    fi
+}
+
+configure_gadget() {
+    if [ "$USB_ENABLED" = 0 ]; then
+        gadget=/sys/kernel/config/usb_gadget/$USB_GADGET_NAME
+        # Configfs attributes report a nonzero file size even when unbound.
+        if [ -e "$gadget/UDC" ]; then
+            bound=$(cat "$gadget/UDC")
+            [ -z "$bound" ] || printf "\n" > "$gadget/UDC"
+        fi
+        return 0
+    fi
+    if host_mode; then
+        log 'host mode; ACM+NCM deferred until the UDC returns'
+        return 0
+    fi
+    mount_configfs || {
+        log 'configfs mount failed'
+        return 1
+    }
+
+    udc=
+    count=0
+    while [ "$count" -lt 20 ]; do
+        host_mode && return 0
+        udc=$(find_udc 2>/dev/null || true)
+        [ -n "$udc" ] && break
+        sleep 1
+        count=$((count + 1))
+    done
+    if [ -z "$udc" ]; then
+        log 'DWC3 UDC not available'
+        return 1
+    fi
+
+    case "$USB_GADGET_NAME" in
+        ''|*[!a-zA-Z0-9_-]*) echo 'Invalid USB_GADGET_NAME' >&2; return 1 ;;
+    esac
+    gadget=/sys/kernel/config/usb_gadget/$USB_GADGET_NAME
+    current=$(cat "$gadget/UDC" 2>/dev/null || true)
+    # Reject configurations owned by another producer before disconnecting.
+    for link in "$gadget"/configs/c.1/*; do
+        [ -L "$link" ] || continue
+        case "${link##*/}" in acm.GS0|ncm.usb0) ;;
+            *) echo 'Unknown gadget function; refusing to alter it' >&2; return 1 ;;
+        esac
+        [ "$(readlink -f "$link")" = "$gadget/functions/${link##*/}" ] || return 1
+    done
+    wanted_acm=0; wanted_ncm=0
+    case "$USB_FUNCTIONS" in acm|acm,ncm) wanted_acm=1 ;; esac
+    case "$USB_FUNCTIONS" in ncm|acm,ncm) wanted_ncm=1 ;; esac
+    have_acm=0; have_ncm=0
+    [ ! -L "$gadget/configs/c.1/acm.GS0" ] || have_acm=1
+    [ ! -L "$gadget/configs/c.1/ncm.usb0" ] || have_ncm=1
+    if [ -n "$current" ] && [ "$current" = "$udc" ] &&
+        [ "$have_acm" = "$wanted_acm" ] && [ "$have_ncm" = "$wanted_ncm" ]; then
+        log 'preserving inherited gadget'
+    else
+        [ -z "$current" ] || printf '\n' > "$gadget/UDC"
+        [ "$wanted_acm" = 1 ] || rm -f "$gadget/configs/c.1/acm.GS0"
+        [ "$wanted_ncm" = 1 ] || rm -f "$gadget/configs/c.1/ncm.usb0"
+        mkdir -p "$gadget/strings/0x409" \
+            "$gadget/configs/c.1/strings/0x409" \
+            "$gadget/functions/acm.GS0" \
+            "$gadget/functions/ncm.usb0"
+        if [ ! -e "$gadget/idVendor" ] || [ "$(cat "$gadget/idVendor")" = "0x0000" ]; then
+        printf '0x1d6b' > "$gadget/idVendor"
+        printf '0x0107' > "$gadget/idProduct"
+        printf '0x0620' > "$gadget/bcdDevice"
+        printf '0xef' > "$gadget/bDeviceClass"
+        printf '2' > "$gadget/bDeviceSubClass"
+        printf '1' > "$gadget/bDeviceProtocol"
+        printf 'W202DS' > "$gadget/strings/0x409/manufacturer"
+        printf 'W202DS Linux ACM+NCM' > "$gadget/strings/0x409/product"
+        printf 'w202ds-linux' > "$gadget/strings/0x409/serialnumber"
+        printf 'ACM + NCM debug transport' > "$gadget/configs/c.1/strings/0x409/configuration"
+        printf '250' > "$gadget/configs/c.1/MaxPower"
+        fi
+
+        [ "$wanted_acm" = 0 ] || [ -e "$gadget/configs/c.1/acm.GS0" ] || \
+            ln -s "$gadget/functions/acm.GS0" "$gadget/configs/c.1/acm.GS0"
+        # Configfs rejects MAC writes once a function is linked, even if
+        # the UDC is currently unbound after a host/device role switch.
+        if [ "$wanted_ncm" = 1 ] && [ ! -L "$gadget/configs/c.1/ncm.usb0" ]; then
+            printf '02:20:20:00:00:02' > "$gadget/functions/ncm.usb0/dev_addr"
+            printf '02:20:20:00:00:01' > "$gadget/functions/ncm.usb0/host_addr"
+            ln -s "$gadget/functions/ncm.usb0" "$gadget/configs/c.1/ncm.usb0"
+        fi
+        if ! printf '%s' "$udc" > "$gadget/UDC"; then
+            host_mode && return 0
+            return 1
+        fi
+    fi
+
+    [ "$wanted_ncm" = 1 ] || return 0
+    count=0
+    while [ ! -d /sys/class/net/usb0 ] && [ "$count" -lt 10 ]; do
+        sleep 1
+        count=$((count + 1))
+    done
+    if [ -d /sys/class/net/usb0 ]; then
+        if [ -n "$USB_ADDRESS" ]; then
+            ip addr replace "$USB_ADDRESS" dev usb0
+        fi
+        ip link set usb0 up 2>/dev/null || true
+        log "ACM+NCM ready: ttyGS0 and usb0${USB_ADDRESS:+=$USB_ADDRESS}"
+    else
+        log 'ACM ready; usb0 interface did not appear'
+    fi
+}
+
+case "${1:-start}" in
+    start) configure_gadget ;;
+    *) echo "usage: $0 start" >&2; exit 2 ;;
+esac

@@ -17,6 +17,8 @@
 #include "himax_ic_core.h"
 #include "himax_modular.h"
 #include "w202-panel.h"
+#include "w202-touch-rotation.h"
+extern unsigned int w202_touch_mount_rotation;
 
 int himax_get_fw_by_lcdinfo(void);
 #ifdef HXTP_DIFFER_CONFIG
@@ -1117,6 +1119,8 @@ EXPORT_SYMBOL(hx_parse_assign_cmd);
 
 int himax_input_register(struct himax_ts_data *ts)
 {
+	bool swap_axes = w202_touch_mount_rotation == 90 ||
+		w202_touch_mount_rotation == 270;
 	int ret = 0;
 #if defined(HX_SMART_WAKEUP)
 	int i = 0;
@@ -1162,11 +1166,13 @@ int himax_input_register(struct himax_ts_data *ts)
 			ts->pdata->abs_y_min,
 			ts->pdata->abs_y_max);
 	input_set_abs_params(ts->input_dev, ABS_MT_POSITION_X,
-			ts->pdata->abs_x_min, ts->pdata->abs_x_max,
-			ts->pdata->abs_x_fuzz, 0);
+			swap_axes ? ts->pdata->abs_y_min : ts->pdata->abs_x_min,
+			swap_axes ? ts->pdata->abs_y_max : ts->pdata->abs_x_max,
+			swap_axes ? ts->pdata->abs_y_fuzz : ts->pdata->abs_x_fuzz, 0);
 	input_set_abs_params(ts->input_dev, ABS_MT_POSITION_Y,
-			ts->pdata->abs_y_min, ts->pdata->abs_y_max,
-			ts->pdata->abs_y_fuzz, 0);
+			swap_axes ? ts->pdata->abs_x_min : ts->pdata->abs_y_min,
+			swap_axes ? ts->pdata->abs_x_max : ts->pdata->abs_y_max,
+			swap_axes ? ts->pdata->abs_x_fuzz : ts->pdata->abs_y_fuzz, 0);
 #ifdef HIMAX_REPORT_AREA_EN
 	input_set_abs_params(ts->input_dev, ABS_MT_TOUCH_MAJOR,
 			ts->pdata->abs_pressure_min,
@@ -2786,6 +2792,7 @@ void himax_report_all_leave_event(struct himax_ts_data *ts)
 static void himax_point_report(struct himax_ts_data *ts)
 {
 	int i = 0;
+	int report_x, report_y;
 	bool valid = false;
 
 #ifdef CONFIG_TOUCHSCREEN_POINT_REPORT_CHECK
@@ -2798,9 +2805,9 @@ static void himax_point_report(struct himax_ts_data *ts)
 			__func__, hx_s_touch_data->finger_num);
 	}
 	for (i = 0; i < ts->nFinger_support; i++) {
-		if (g_target_report_data->p[i].x >= 0
+		if (g_target_report_data->p[i].x >= ts->pdata->abs_x_min
 		&& g_target_report_data->p[i].x <= ts->pdata->abs_x_max
-		&& g_target_report_data->p[i].y >= 0
+		&& g_target_report_data->p[i].y >= ts->pdata->abs_y_min
 		&& g_target_report_data->p[i].y <= ts->pdata->abs_y_max)
 			valid = true;
 		else
@@ -2808,19 +2815,25 @@ static void himax_point_report(struct himax_ts_data *ts)
 		if (g_ts_dbg != 0)
 			I("valid=%d\n", valid);
 		if (valid) {
+			report_x = g_target_report_data->p[i].x;
+			report_y = g_target_report_data->p[i].y;
+			w202_touch_rotate(w202_touch_mount_rotation,
+				ts->pdata->abs_x_min, ts->pdata->abs_x_max,
+				ts->pdata->abs_y_min, ts->pdata->abs_y_max,
+				&report_x, &report_y);
 			if (g_ts_dbg != 0) {
 				I("report_data->x[i]=%d,y[i]=%d,w[i]=%d",
-					g_target_report_data->p[i].x,
-					g_target_report_data->p[i].y,
+					report_x,
+					report_y,
 					g_target_report_data->p[i].w);
 			}
 #ifdef HX_REPORT_BY_ZTE_ALGO
 			if (tpd_cdev->zte_tp_algo) {
 #ifdef HIMAX_REPORT_AREA_EN
-				tpd_touch_press(ts->input_dev, g_target_report_data->p[i].x, g_target_report_data->p[i].y,
+				tpd_touch_press(ts->input_dev, report_x, report_y,
 							i, g_target_report_data->p[i].w, 0);
 #else
-				tpd_touch_press(ts->input_dev, g_target_report_data->p[i].x, g_target_report_data->p[i].y,
+				tpd_touch_press(ts->input_dev, report_x, report_y,
 							i, 0, 0);
 #endif
 			} else {
@@ -2845,9 +2858,9 @@ static void himax_point_report(struct himax_ts_data *ts)
 					i + 1);
 #endif
 				input_report_abs(ts->input_dev, ABS_MT_POSITION_X,
-					g_target_report_data->p[i].x);
+					report_x);
 				input_report_abs(ts->input_dev, ABS_MT_POSITION_Y,
-					g_target_report_data->p[i].y);
+					report_y);
 #if !defined(HX_PROTOCOL_A)
 				ts->last_slot = i;
 #else
@@ -2876,9 +2889,9 @@ static void himax_point_report(struct himax_ts_data *ts)
 					i + 1);
 #endif
 			input_report_abs(ts->input_dev, ABS_MT_POSITION_X,
-					g_target_report_data->p[i].x);
+					report_x);
 			input_report_abs(ts->input_dev, ABS_MT_POSITION_Y,
-					g_target_report_data->p[i].y);
+					report_y);
 #if !defined(HX_PROTOCOL_A)
 			ts->last_slot = i;
 #else

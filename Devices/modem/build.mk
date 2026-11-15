@@ -30,8 +30,9 @@ $(eval $(call module,w202ds-modem-sipa-eth,modem/source/sprd_modem,sipa_v3/sipa_
 $(eval $(call module,w202ds-modem-sipa-delegate,modem/source/sprd_modem,sipa_delegate/sipa-dele.ko,w202ds-modem-sipc-core w202ds-modem-sipa-core,$(MODEM_BUILD_HEADERS)))
 .PHONY: w202ds-modem-driver w202ds-modem-driver-reference
 w202ds-modem-driver: w202ds-modem-trusty w202ds-modem-trusty-irq w202ds-modem-trusty-pm w202ds-modem-trusty-log \
-       w202ds-modem-trusty-virtio w202ds-modem-shm w202ds-modem-mailbox w202ds-modem-virt-bus w202ds-modem-power \
-       w202ds-modem-sipc-core w202ds-modem-spipe w202ds-modem-loader w202ds-modem-sipa-core w202ds-modem-sipa-delegate
+       w202ds-modem-trusty-virtio w202ds-modem-trusty-ipc w202ds-modem-shm w202ds-modem-mailbox w202ds-modem-virt-bus w202ds-modem-power \
+       w202ds-modem-sipc-core w202ds-modem-spipe w202ds-modem-loader w202ds-modem-sipa-core w202ds-modem-sipa-eth w202ds-modem-sipa-delegate \
+       w202ds-modem-systimer w202ds-modem-timesync w202ds-modem-timesync-cp
 w202ds-modem-driver-reference: $(filter w202ds-modem-%,$(MODULES))
 SERVER_MODULES += w202ds-modem-driver
 # Build dependencies are not a live-device unload/reload plan. SIPC/SIPA remain loaded.

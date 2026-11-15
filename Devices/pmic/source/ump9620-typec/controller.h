@@ -9,7 +9,11 @@
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/regmap.h>
+#include <linux/property.h>
+#include <linux/power_supply.h>
+#include <linux/usb/phy.h>
 #include <linux/usb/tcpm.h>
+#include <linux/workqueue.h>
 #include "registers.h"
 
 struct w202_saved_reg {
@@ -25,8 +29,18 @@ struct w202_typec {
 	bool aon_clock_saved;
 	struct mutex lock;
 	struct tcpc_dev tcpc;
+	struct software_node profile_nodes[3];
+	struct property_entry *profile_properties[2];
 	struct tcpm_port *port;
+	struct usb_phy *usb_phy;
 	struct power_supply *supply;
+	struct regulator *vbus;
+	struct notifier_block vbus_nb;
+	struct delayed_work vbus_work;
+	int vbus_seen;
+	bool vbus_on, attached, cc_forced;
+	enum typec_role power_role;
+	enum typec_cc_polarity polarity;
 	u32 base, typec_base, rc_cal, ref_cal, delta_cal;
 	u32 source_caps[PDO_MAX_OBJECTS];
 	unsigned int nr_source_caps, max_mv, max_ma;
@@ -59,6 +73,19 @@ static inline struct w202_typec *tcpc_to_w202(struct tcpc_dev *tcpc)
 	return container_of(tcpc, struct w202_typec, tcpc);
 }
 
+int w202_typec_get_cc(struct tcpc_dev *tcpc, enum typec_cc_status *cc1,
+		      enum typec_cc_status *cc2);
+int w202_typec_set_cc(struct tcpc_dev *tcpc, enum typec_cc_status cc);
+int w202_typec_start_toggling(struct tcpc_dev *tcpc, enum typec_port_type type,
+			    enum typec_cc_status cc);
+int w202_typec_stop_source(struct w202_typec *pd);
+void w202_typec_vbus_init(struct w202_typec *pd);
+int w202_typec_set_vbus(struct tcpc_dev *tcpc, bool on, bool charge);
+int w202_typec_set_roles(struct tcpc_dev *tcpc, bool attached,
+			enum typec_role power, enum typec_data_role data);
+void w202_typec_charger_state(struct w202_typec *pd, bool sink);
+int w202_typec_charger_current(struct tcpc_dev *tcpc);
+int w202_typec_charger_type(struct w202_typec *pd);
 int w202_typec_snapshot(struct w202_typec *pd);
 void w202_typec_restore(struct w202_typec *pd);
 int w202_typec_calibrate(struct w202_typec *pd);
@@ -66,6 +93,9 @@ int w202_typec_hw_init(struct w202_typec *pd);
 int w202_typec_enable_clock(struct w202_typec *pd);
 int w202_typec_reset_block(struct w202_typec *pd);
 int w202_typec_supply_register(struct w202_typec *pd);
+int w202_typec_connector_create(struct w202_typec *pd, unsigned int target_mv,
+			       unsigned int pps_max_mv, bool pps);
+void w202_typec_connector_remove(struct w202_typec *pd);
 void w202_typec_supply_unregister(struct w202_typec *pd);
 int w202_pd_flush(struct w202_typec *pd, bool reset_ids);
 void w202_pd_latch_fault(struct w202_typec *pd, const char *reason);

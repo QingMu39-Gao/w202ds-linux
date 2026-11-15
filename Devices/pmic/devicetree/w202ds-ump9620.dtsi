@@ -98,6 +98,7 @@
 						nvmem-cells = <0x74>;
 						io-channels = <0x75 0x06 0x75 0x00 0x75 0x0e>;
 						io-channel-names = "adc-batt-id", "bat-temp", "charge-vol";
+						usb-phy = <0x24>;
 						interrupt-parent = <0x6b>;
 						interrupts = <0x03 0x04>;
 						monitored-battery = <0x25 0x26>;
@@ -201,8 +202,14 @@
 						status = "okay";
 						sprd,syscon-aon-apb = <0x02>;
 						vbus-supply = <0x7a>;
+						usb-phy = <0x24>;
 						use-pdhub-c2c;
 						phandle = <0x61>;
+						port {
+							w202_pd_usb_role: endpoint {
+								remote-endpoint = <&w202_dwc3_usb_role>;
+							};
+						};
 						connector {
 							compatible = "usb-c-connector";
 							label = "USB-C";

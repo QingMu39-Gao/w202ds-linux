@@ -1,0 +1,15 @@
+[Unit]
+Description=W202DS native display preparation
+DefaultDependencies=no
+After=local-fs.target systemd-udev-trigger.service
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/w202-display-prepare
+RemainAfterExit=yes
+TimeoutStartSec=20
+
+[Install]
+WantedBy=multi-user.target

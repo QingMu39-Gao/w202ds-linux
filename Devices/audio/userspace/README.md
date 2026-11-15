@@ -6,7 +6,7 @@
 make install DESTDIR=/path/to/staging
 ```
 
-安装仅暂存文件。发行版负责提供匹配模块、固件、kmod 和 systemd，并决定是否启用服务。REIMUKS 检测到音频声卡模块时使用本模板。ALSA UCM、路由和音量配置也归本组件；PipeWire/WirePlumber 由发行版提供。
+安装仅暂存文件。发行版负责提供匹配模块、固件、kmod 和 systemd，并决定是否启用服务。发行版集成层 检测到音频声卡模块时使用本模板。ALSA UCM、路由和音量配置也归本组件；PipeWire/WirePlumber 由发行版提供。
 
 系统集成负责安装模板和桌面策略，应用使用此组件说明的 Linux 标准接口。
 

@@ -1,0 +1,1 @@
+/* Host tests provide the regulator API mocks before including roles.c. */

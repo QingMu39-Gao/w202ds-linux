@@ -1,0 +1,17 @@
+#!/bin/sh
+# Hardware readiness only; NetworkManager or the selected network policy owns connections.
+set -eu
+for name in gnssmodem.bin wcnmodem.bin wifi_board_config.ini; do
+    test -s "/lib/firmware/$name" || { echo "Missing Wi-Fi firmware: $name" >&2; exit 1; }
+done
+modprobe sha256
+modprobe wcn_bsp
+modprobe sprd_wlan_combo
+attempt=0
+while test "$attempt" -lt 350; do
+    test ! -d /sys/class/net/wlan0/phy80211 || exit 0
+    attempt=$((attempt + 1))
+    sleep 0.1
+done
+echo 'Wi-Fi interface did not become ready' >&2
+exit 1

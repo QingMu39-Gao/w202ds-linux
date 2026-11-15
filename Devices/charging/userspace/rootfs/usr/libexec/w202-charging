@@ -1,0 +1,78 @@
+#!/bin/sh
+# Prepare the board drivers, then apply the distribution's requested mode.
+set -eu
+mode=${1:-inhibit-charge}
+sysfs=${W202_SYSFS_ROOT:-/sys}
+supplies=${W202_POWER_SUPPLY_ROOT:-$sysfs/class/power_supply}
+case "$mode" in
+    status)
+        found=0
+        for supply in "$supplies"/w202-usb-c "$supplies"/w202-battery \
+                      "$supplies"/w202-bq-main "$supplies"/w202-bq-slave \
+                      "$supplies"/tcpm-source-psy-*; do
+            test -d "$supply" || continue
+            found=1
+            for attr in online usb_type status health capacity temp voltage_now voltage_max \
+                        current_now current_max power_now charge_behaviour \
+                        constant_charge_current input_current_limit; do
+                test -r "$supply/$attr" || continue
+                value=$(cat "$supply/$attr")
+                printf '%s.%s=%s\n' "${supply##*/}" "$attr" "$value"
+            done
+            for attr in charge_enabled charging_policy; do
+                test -r "$supply/device/$attr" || continue
+                value=$(cat "$supply/device/$attr")
+                printf '%s.%s=%s\n' "${supply##*/}" "$attr" "$value"
+            done
+        done
+        for port in "$sysfs"/class/typec/port*; do
+            for attr in port_type data_role power_role power_operation_mode; do
+                test -r "$port/$attr" || continue
+                value=$(cat "$port/$attr")
+                printf '%s.%s=%s\n' "${port##*/}" "$attr" "$value"
+            done
+        done
+        for role in "$sysfs"/class/usb_role/*/role; do
+            test -r "$role" || continue
+            value=$(cat "$role")
+            printf 'usb_role.%s=%s\n' "$(basename "$(dirname "$role")")" "$value"
+        done
+        if test "$found" = 0; then
+            echo 'W202DS charging: power_supply interfaces unavailable' >&2
+            exit 1
+        fi
+        exit 0 ;;
+    auto|inhibit-charge) ;;
+    *) echo 'Usage: w202-charging [auto|inhibit-charge|status]' >&2; exit 2 ;;
+esac
+modprobe w202_ump9620_power
+modprobe w202_bq_control
+# No PD controller still permits the driver's guarded ordinary USB fallback.
+if ! modprobe w202_ump9620_typec; then
+    echo 'W202DS charging: PD controller unavailable; using ordinary USB limits' >&2
+fi
+attempt=0
+while ! test -w "$supplies/w202-bq-main/charge_behaviour" ||
+      ! test -w "$supplies/w202-bq-slave/charge_behaviour" ||
+      ! test -r "$supplies/w202-battery/voltage_now"; do
+    attempt=$((attempt + 1))
+    if test "$attempt" -ge 450; then
+        echo 'W202DS charging: guarded charger or battery telemetry did not become ready' >&2
+        exit 1
+    fi
+    sleep 0.1
+done
+set_mode() {
+    supply=$1
+    requested=$2
+    printf '%s\n' "$requested" > "$supplies/$supply/charge_behaviour"
+    actual=$(cat "$supplies/$supply/charge_behaviour")
+    case "$actual" in
+        "$requested"|*"[$requested]"*) ;;
+        *) echo "W202DS charging: $supply did not accept $requested" >&2; return 1 ;;
+    esac
+}
+# The unconfigured second charger must stay off before the main is enabled.
+set_mode w202-bq-slave inhibit-charge
+set_mode w202-bq-main "$mode"
+echo "W202DS charging: main=$mode, slave=inhibit-charge; limits and PD/PPS are driver-managed"

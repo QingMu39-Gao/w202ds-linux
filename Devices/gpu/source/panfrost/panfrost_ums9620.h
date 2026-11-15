@@ -9,6 +9,7 @@ static inline bool panfrost_is_ums9620(struct panfrost_device *pfdev)
 }
 int panfrost_ums9620_init(struct panfrost_device *pfdev);
 int panfrost_ums9620_add_opps(struct panfrost_device *pfdev);
+int panfrost_ums9620_set_rate(struct panfrost_device *pfdev, unsigned long rate);
 int panfrost_ums9620_runtime_suspend(struct panfrost_device *pfdev);
 int panfrost_ums9620_runtime_resume(struct panfrost_device *pfdev);
 #endif

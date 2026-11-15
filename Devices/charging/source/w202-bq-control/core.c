@@ -2,7 +2,7 @@
 /* W202DS dual UPM6910H: guarded main-only charging, standard power_supply ABI.
  * Probe stops both chips; userspace explicitly selects auto on the main.
  * Input ceilings follow the source contract and stock Android charge profile.
- * Keep HIZ, GPIO, OTG and the power path inherited. Never enable
+ * OTG owns bounded boost and temporary HIZ isolation. Never enable
  * the unconfigured slave. Cable events and the existing 2 s worker check the
  * battery NTC/FGU, charger faults and the bounded normal-charge profile.
  */
@@ -30,6 +30,7 @@ static void stop_work(struct work_struct *work)
 	int ret, status, config, state, battery_current, pps_ret;
 	bool changed = false;
 
+	w202_bq_otg_monitor(bq);
 	/* Do not hold the charger lock across a synchronous TCPM negotiation. */
 	pps_ret = w202_bq_refresh_pps(bq);
 	mutex_lock(&bq->lock);
@@ -208,6 +209,9 @@ static int w202_bq_probe(struct i2c_client *client)
 	charge_config = i2c_smbus_read_byte_data(client, 1);
 	if (charge_config < 0)
 		return charge_config;
+	ret = w202_bq_register_otg(bq);
+	if (ret)
+		return ret;
 	ret = watch_cable(bq);
 	if (ret)
 		return ret;
@@ -232,6 +236,8 @@ static void w202_bq_shutdown(struct i2c_client *client)
 	mutex_lock(&bq->lock);
 	bq->shutting_down = true;
 	mutex_unlock(&bq->lock);
+	if (w202_bq_otg_shutdown(bq))
+		dev_err(&client->dev, "OTG final stop not confirmed\n");
 	if (bq->extcon)
 		devm_extcon_unregister_notifier_all(&client->dev, bq->extcon, &bq->cable_nb);
 	cancel_delayed_work_sync(&bq->stop_work);
@@ -249,6 +255,10 @@ static int w202_bq_suspend(struct device *dev)
 	int ret;
 
 	mutex_lock(&bq->lock);
+	if (bq->otg_active) {
+		mutex_unlock(&bq->lock);
+		return -EBUSY;
+	}
 	bq->suspended = true;
 	ret = w202_bq_stop_locked(bq);
 	mutex_unlock(&bq->lock);

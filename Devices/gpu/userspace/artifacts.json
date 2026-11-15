@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "rootfs": "output/userspace/gpu/rootfs",
+  "required": [
+    "usr/lib/w202-panvk/libvulkan_panfrost.so",
+    "usr/share/vulkan/icd.d/w202_panfrost_icd.json",
+    "usr/bin/w202-panvk-run"
+  ],
+  "base": "project"
+}

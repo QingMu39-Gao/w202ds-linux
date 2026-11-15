@@ -1606,8 +1606,11 @@ int sc2355_pcie_push_link(struct sprd_hif *hif, int chn,
 	ret = sprdwcn_bus_push_list(chn, head, tail, num);
 	time = jiffies - time;
 
-	if (ret) {
-		/* MU300: rate-limited, the RX refill and every TX retry it */
+	if (ret == -EAGAIN && chn == hif->tx_data_port) {
+		/* The pending ring kept nothing; TX retries after completion. */
+		pr_debug_ratelimited("%s: TX queue busy, retry chn: %d\n",
+				     __func__, chn);
+	} else if (ret) {
 		pr_err_ratelimited("%s: push link fail: %d, chn: %d!\n", __func__, ret,
 				   chn);
 	}

@@ -11,6 +11,7 @@
 #include <linux/io.h>
 #include <linux/iommu.h>
 #include <linux/iopoll.h>
+#include <linux/ktime.h>
 #include <linux/mfd/syscon.h>
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
@@ -69,6 +70,9 @@ struct codec_device {
 	atomic_t native_started, native_inflight, native_cancel_before_irq;
 	atomic_t native_cancel_dma_active;
 	spinlock_t irq_lock;
+	/* All accounting fields share irq_lock; snapshots never touch MMIO. */
+	u64 stats_epoch, busy_ns, busy_since, untracked_ns, untracked_since;
+	bool stats_busy, stats_untracked;
 	struct mutex power_lock;
 	bool powered;
 	u32 pending, last_irq;
@@ -95,6 +99,15 @@ static void codec_mask_clear(struct codec_device *c)
 	readl(c->base + REG_INT_RAW);
 }
 
+/* Caller holds irq_lock. Repeated completion/reset must not double-count. */
+static void codec_busy_end(struct codec_device *c, u64 now)
+{
+	if (c->stats_busy) {
+		c->busy_ns += now - c->busy_since;
+		c->stats_busy = false;
+	}
+}
+
 static irqreturn_t codec_irq(int irq, void *data)
 {
 	struct codec_device *c = data;
@@ -106,6 +119,7 @@ static irqreturn_t codec_irq(int irq, void *data)
 		return IRQ_NONE;
 	codec_mask_clear(c);
 	spin_lock_irqsave(&c->irq_lock, flags);
+	codec_busy_end(c, ktime_get_ns());
 	c->pending |= status | (mmu << 16);
 	c->last_irq = status | (mmu << 16);
 	spin_unlock_irqrestore(&c->irq_lock, flags);
@@ -143,6 +157,8 @@ static int codec_reset(struct codec_device *c)
 		dev_err(c->misc.parent, "decoder reset failed: %d\n", ret);
 	}
 	spin_lock_irqsave(&c->irq_lock, flags);
+	if (!ret)
+		codec_busy_end(c, ktime_get_ns());
 	c->pending = 0;
 	spin_unlock_irqrestore(&c->irq_lock, flags);
 	enable_irq(c->irq);
@@ -213,6 +229,7 @@ open_failed:
 static int codec_context_put(struct codec_file *ctx)
 {
 	struct codec_device *c = ctx->codec;
+	unsigned long flags;
 	int ret;
 
 	mutex_lock(&ctx->lock);
@@ -235,6 +252,12 @@ static int codec_context_put(struct codec_file *ctx)
 	w202_vpu_buffers_destroy(&ctx->buffers);
 	atomic_sub(ret, &c->maps);
 	atomic_add(ret, &c->auto_released);
+	spin_lock_irqsave(&c->irq_lock, flags);
+	if (c->stats_untracked) {
+		c->untracked_ns += ktime_get_ns() - c->untracked_since;
+		c->stats_untracked = false;
+	}
+	spin_unlock_irqrestore(&c->irq_lock, flags);
 	codec_mask_clear(c);
 	disable_irq(c->irq);
 	c->powered = false;
@@ -253,10 +276,18 @@ static int codec_open(struct inode *inode, struct file *file)
 	struct miscdevice *misc = file->private_data;
 	struct codec_device *c = container_of(misc, struct codec_device, misc);
 	struct codec_file *ctx;
+	unsigned long flags;
 	int ret = codec_context_get(c, &ctx);
 
-	if (!ret)
-		file->private_data = ctx;
+	if (ret)
+		return ret;
+	/* A userspace MMIO owner can START without an ioctl: its whole lease is
+	 * unobservable, including time before ENABLE. Never report false idle. */
+	spin_lock_irqsave(&c->irq_lock, flags);
+	c->untracked_since = ktime_get_ns();
+	c->stats_untracked = true;
+	spin_unlock_irqrestore(&c->irq_lock, flags);
+	file->private_data = ctx;
 	return ret;
 }
 
@@ -317,12 +348,13 @@ int w202_vpu_native_end(struct codec_file *ctx)
 }
 
 int w202_vpu_native_execute(struct codec_file *ctx,
-			    const struct w202_h264_config *config,
+			    const struct w202_vpu_config *config,
 			    const atomic_t *abort)
 {
 	struct codec_device *c = ctx->codec;
 	u32 value, bits, n;
 	unsigned int i;
+	unsigned long flags;
 	long waited;
 	int ret;
 
@@ -330,7 +362,7 @@ int w202_vpu_native_execute(struct codec_file *ctx,
 		return -ECANCELED;
 	writel(0xd0, c->base + 0x1010);
 	writel(0, c->base + 0x1028);
-	writel(4, c->base + 0x1020);
+	writel(config->codec == W202_VPU_HEVC ? 0x107 : 4, c->base + 0x1020);
 	ret = readl_poll_timeout(c->base + 0x8018, value,
 				 !(value & BIT(27)), 1, 20000);
 	if (ret)
@@ -339,7 +371,7 @@ int w202_vpu_native_execute(struct codec_file *ctx,
 	writel(config->stream_address >> 4, c->base + 0x1084);
 	writel(6, c->base + 0x8008);
 	writel(BIT(31), c->base + 0x8004);
-	writel((config->stream_bytes + W202_H264_BSM_PADDING) | BIT(31), c->base + 0x8000);
+	writel((config->stream_bytes + W202_VPU_BSM_PADDING) | BIT(31), c->base + 0x8000);
 	for (bits = config->header_bits; bits; bits -= n) {
 		if (atomic_read(abort))
 			return -ECANCELED;
@@ -359,8 +391,15 @@ int w202_vpu_native_execute(struct codec_file *ctx,
 	writel(0x1035, c->base + REG_INT_MASK);
 	writel(0xfb, c->base + REG_MMU_MASK);
 	writel(0xffffffff, c->base + 0x1038);
+	/* Arm before START while excluding the completion IRQ. */
+	spin_lock_irqsave(&c->irq_lock, flags);
+	if (!c->stats_busy) {
+		c->busy_since = ktime_get_ns();
+		c->stats_busy = true;
+	}
 	writel(1, c->base + 0x1028);
 	writel(10, c->base + 0x1030);
+	spin_unlock_irqrestore(&c->irq_lock, flags);
 	atomic_inc(&c->native_started);
 	atomic_set(&c->native_inflight, 1);
 	waited = wait_event_interruptible_timeout(c->wait,
@@ -570,7 +609,32 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr, cha
 	return count;
 }
 static DEVICE_ATTR_RO(state);
-static struct attribute *codec_attrs[] = { &dev_attr_state.attr, NULL };
+
+static ssize_t utilization_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct codec_device *c = dev_get_drvdata(dev);
+	unsigned long flags;
+	u64 now, busy, untracked, epoch;
+	bool healthy;
+
+	spin_lock_irqsave(&c->irq_lock, flags);
+	now = ktime_get_ns();
+	epoch = c->stats_epoch;
+	busy = c->busy_ns + (c->stats_busy ? now - c->busy_since : 0);
+	untracked = c->untracked_ns +
+		(c->stats_untracked ? now - c->untracked_since : 0);
+	healthy = !READ_ONCE(c->broken);
+	spin_unlock_irqrestore(&c->irq_lock, flags);
+	return sysfs_emit(buf, "version=1 generation=%llu total_ns=%llu busy_ns=%llu untracked_ns=%llu healthy=%u frequency_hz=%lu\n",
+			 (unsigned long long)epoch, (unsigned long long)(now - epoch),
+			 (unsigned long long)busy, (unsigned long long)untracked,
+			 healthy, clk_get_rate(c->clock));
+}
+static DEVICE_ATTR_RO(utilization);
+static struct attribute *codec_attrs[] = {
+	&dev_attr_state.attr, &dev_attr_utilization.attr, NULL
+};
 ATTRIBUTE_GROUPS(codec);
 
 static int codec_probe(struct platform_device *pdev)
@@ -615,6 +679,7 @@ static int codec_probe(struct platform_device *pdev)
 		c->num_parents++;
 	}
 	spin_lock_init(&c->irq_lock);
+	c->stats_epoch = ktime_get_ns();
 	mutex_init(&c->power_lock);
 	init_waitqueue_head(&c->wait);
 	c->misc = (struct miscdevice){

@@ -1447,6 +1447,22 @@ static const struct of_device_id modem_match_table[] = {
 	{ },
 };
 
+/* Runtime status must remain available without CONFIG_DEBUG_FS. */
+static ssize_t run_state_show(struct device *dev,
+                             struct device_attribute *attr, char *buf)
+{
+	struct modem_device *modem = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n", READ_ONCE(modem->run_state));
+}
+static DEVICE_ATTR_RO(run_state);
+
+static struct attribute *modem_attrs[] = {
+	&dev_attr_run_state.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(modem);
+
 static int modem_probe(struct platform_device *pdev)
 {
 	struct modem_device *modem;
@@ -1509,9 +1525,9 @@ static int modem_probe(struct platform_device *pdev)
 		goto fail_pms;
 	}
 
-	dev = device_create(modem_class, NULL,
-		      modem->devid,
-		      NULL, "%s", modem->modem_name);
+	dev = device_create_with_groups(modem_class, NULL,
+		      modem->devid, modem, modem_groups,
+		      "%s", modem->modem_name);
 	if (IS_ERR(dev)) {
 		dev_err(modem->p_dev, "device_create fail,ERRNO = %ld!\n",
 			PTR_ERR(dev));

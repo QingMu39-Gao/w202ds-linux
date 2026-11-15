@@ -2,6 +2,10 @@
 
 在具备交叉工具链的 Linux 主机构建内核和模块。需要 GNU make、Python 3.11+、AArch64 GCC/binutils、flex、bison、bc、OpenSSL/ELF 开发包、dtc、kmod。以下从仓库根运行，输出全部放 `output/`。
 
+每个 profile 使用固定的 `output/kernel-<profile>/`，外置模块默认放在其中的
+`modules/`。不另建带日期、编译器名或版本后缀的并列输出；需要对照留存时，
+构建完成后复制到独立工作区再改名。
+
 默认主推 debug，它继承 desktop 的屏幕/键盘基础。配置合成模型与外部覆盖接口见
 [config/kernel/README.md](config/kernel/README.md)，调试能力和内建清单见
 [config/kernel/DEBUG.md](config/kernel/DEBUG.md)。仅生成配置时将 `build` 换成 `configure`；
@@ -21,7 +25,8 @@ dtc -I dts -O dtb -o output/devicetree/w202ds-server.dtb devicetree/w202ds-serve
 
 `scripts/build.py` 默认选择 debug：没有内核输出时先构建 `Image modules`，再编译外置模块；
 已有输出时核验后复用。发现内核 Git 提交或工作区修改、内建驱动链接目标、配置模型/片段、
-release 或已准备文件变化时拒绝，要求换新输出目录。模块自身源码可以修改并正常重编。
+release 或已准备文件变化时拒绝；需要重建时先清理该 profile 的固定输出目录。
+如需留存旧结果，先复制到独立工作区。模块自身源码可以修改并正常重编。
 完整内核输出额外保存 `kernel-state.json`，导出时将这份来源信息带入压缩包。
 
 ```sh
@@ -33,7 +38,7 @@ python3 -B scripts/build.py --skip-kernel --kernel-out output/kernel-debug w202d
 
 # 明确沿用旧内核，跳过 Git/配置新旧检查；该选项同时跳过内核编译。
 python3 -B scripts/build.py --skip-kernel-check \
-  --kernel-out output/kernel-debug-imported w202ds-hall-driver
+  --kernel-out output/kernel-debug w202ds-hall-driver
 ```
 
 两个跳过选项都要求显式指定 `--kernel-out`。它可以是完整 Kbuild 输出，也可以是
@@ -50,8 +55,9 @@ python3 -B scripts/build.py --skip-kernel-check \
 示例中的 `LOCALVERSION=` 仅清空额外手工后缀，不会关闭自动 Git 标识；
 构建外部模块时保持同一设置，以匹配内核 release。
 
-现有 Server 配置强制使用自身命令行，入口为 `rdinit=/w202diag`，需要另行提供匹配 initramfs/rootfs。
-这份配置和源码不是通用发行版安装器，也不包含任何引导固件。板级 DT 中继承的硬件/保留内存必须与启动环境一致。
+`config/server.config` 是历史 Server/debug 对照，不作为当前启动配置；其中遗留的
+`rdinit=/w202diag` 不用于新构建。当前 debug 与 desktop profile 都走标准 initramfs `/init`，
+并保留 bootloader 参数。内核源码不再包含 W202DS diagnostic recovery。板级 DT 中继承的硬件/保留内存必须与启动环境一致。
 
 CPU 调频默认由 desktop 合入 `config/fragments/cpu-dvfs.config`，debug 继承该配置。
 驱动 `sprd-cpufreq-v2` 与 `sprd_sip_svc` 均内建，无独立 CPU 模块；外部配置仍可通过重复的
@@ -67,12 +73,22 @@ make -C Devices/wcn/userspace CROSS_COMPILE= OUT="$PWD/output/wcn-bt-native" tes
 make -C Devices/wcn/userspace OUT="$PWD/output/wcn-bt-arm64" DESTDIR="$PWD/output/wcn-bt-rootfs" install
 ```
 
-使用现有 CM2 冻结构建目录进行单模块开发时，见 [独立模块构建说明](Devices/BUILD.md) 的 cfg80211 导出选项。
+复用已验证的构建目录进行单模块开发时，见 [独立模块构建说明](Devices/BUILD.md) 的 cfg80211 导出选项。
 构建检查与真机功能验收分别记录，不能由编译成功推断硬件完整可用。
 
-2026-11-08 的 debug 构建已在 KDE 启动项上机，运行版本为 `6.18.35-w202ds-00002-g53bb26e2e0d5`，CPU 三簇的低、中、高频点均已验证硬件读回。更换 release 时还须同步 initramfs、模块目录和用户态版本约定，不能只改 Image 文件名。
+更换 release 时，启动环境必须同步匹配的 initramfs、模块目录和内核身份记录，不能只改 Image 文件名。CPU 频点应通过硬件读回验证。
 
 基带用户态独立入口为 `make -C Devices/modem/userspace OUT=绝对输出目录 all`，不触发内核构建。目录名称已简化，内核模块目标名称不变。
+
+全部运行工具和服务模板可统一构建、离线暂存；GPU/VPU 和第三方库的独立依赖见
+[用户态说明](Devices/USERSPACE.md)。systemd 基础单元随组件维护，服务启用和发行版
+配置由 rootfs 集成项目负责。
+
+```sh
+make -C Devices -f userspace.mk OUT="$PWD/output/userspace/arm64" all
+make -C Devices -f userspace.mk OUT="$PWD/output/userspace/arm64" DESTDIR="$PWD/output/userspace/rootfs" install
+make -C Devices -f userspace.mk OUT="$PWD/output/userspace/tests" check
+```
 
 ## 分离后的内建与模块
 
@@ -101,11 +117,11 @@ make -C Devices/wcn/userspace OUT="$PWD/output/wcn-bt-arm64" DESTDIR="$PWD/outpu
 python3 -B scripts/kernel-export.py --out output/kernel-debug \
   --kernel kernel --archive output/w202ds-kernel-debug.tar.gz
 
-# 将压缩包传到本地，然后从本地仓库根目录导入到新目录。
+# 将压缩包传到本地；先确保该 profile 的固定输出目录已清理。
 python3 -B scripts/kernel-import.py --archive output/w202ds-kernel-debug.tar.gz \
-  --kernel kernel --out output/kernel-debug-imported
+  --kernel kernel --out output/kernel-debug
 
-python3 -B scripts/build.py --skip-kernel --kernel-out output/kernel-debug-imported \
+python3 -B scripts/build.py --skip-kernel --kernel-out output/kernel-debug \
   w202ds-hall-driver
 ```
 
@@ -118,3 +134,13 @@ python3 -B scripts/build.py --skip-kernel --kernel-out output/kernel-debug-impor
 Rust、模块 BTF 或 objtool 启用时会拒绝导出，以免漏掉所需编译文件。
 外置模块源码修改可复用这一输出；更改内核配置或内核接口后，重新构建并导出新的包。
 流程参考 [Linux 外置模块构建说明](https://docs.kernel.org/kbuild/modules.html)。
+
+## 构建输出位置
+
+所有默认构建产物统一放在仓库根目录的 `output/`，`Devices/` 仅保存源码、构建描述和服务模板。
+
+- `output/kernel-<profile>/`：内核、设备树与对应模块。
+- `output/userspace/<component>/`：硬件用户态工具及该组件的 `rootfs/` 暂存树。
+- `output/userspace/native/`：宿主测试工具。
+
+`make -C Devices -f userspace.mk all install` 默认按组件暂存；只有显式传入 `DESTDIR` 时才安装到共同的目标根目录。GPU 的 Meson 构建目录同样放在 `output/userspace/gpu/` 下。

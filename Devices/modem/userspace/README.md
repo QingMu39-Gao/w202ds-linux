@@ -1,54 +1,33 @@
-# 基带用户态
-
-本目录管理 W202DS 基带对应的用户空间源码和服务模板，与内核 `../source/`、设备树 `../devicetree/`、固件 `../firmware/` 同属一个硬件项目。初始导入逐文件来源见 `SOURCES.json`，后续修改以 Git 记录为准。
+# W202DS 基带用户态
 
 | 目录 | 内容 |
 | --- | --- |
-| `at/` | SIPC AT 查询、数据连接控制、绑定蜂窝源地址的 DNS 检查。 |
-| `runtime/` | 原厂 Bionic 程序的日志/属性服务桥接、私有 NV loop 存储、属性模板及私有输入契约。 |
-| `rootfs/` | 本基带自己的运行服务、网络服务、账户和默认配置模板。 |
-| `tests/` | AT 回包与并发锁、NV 完整性和 loop 映射检查、loader 进程锁验收源码。 |
-| `ModemManager/` | 上游 1.24.0 工作树上的 SIPC 端口、W202DS 插件与 M-ETHER bearer 适配。 |
-| `integration/` | 可选的 KDE / NetworkManager 接入配置；不随基础 AT 安装自动启用。 |
+| `at/` | SIPC AT 查询、蜂窝数据控制和网络检查。 |
+| `runtime/` | Bionic 原厂程序的属性/日志桥接、私有 NV 存储和输入契约。 |
+| `rootfs/` | 运行脚本、systemd/sysusers 单元和默认配置。 |
+| `ModemManager/` | ModemManager 1.24.0 的 SIPC/W202DS 插件适配。 |
+| [RUNTIME.md](RUNTIME.md) | 固件/NV 私有输入与运行隔离契约。 |
+| `tests/` | AT 回包、并发锁和 NV 存储回归测试。 |
 
-上述源码、配置、测试和构建文件随本仓库发布。`ModemManager/` 发布完整的当前源码快照，基于上游 1.24.0 的 `dfa41adf391b090720fb1ea56d884f61ea7fba29`，包含本项目的 SIPC/W202DS 适配；本地上游 Git 工作树保留，`.git` 不上传。它以普通源码文件纳入本仓库，克隆后即可取得。
-
-`releases/` 是本地已测试的安装包、源码快照和验证记录；`server-runtime-20261103-v5/` 是旧 Server 运行参考包。两者均仅在本地保留，不上传 GitHub，也不参与下面的 `make` 构建。编译临时目录 `output/` 同样不上传；设备私有 NV、IMEI 和密钥不属于发布源码。
-
-## 已实现
-
-`w202-modem-at` 通过 `/dev/stty_nr0` 原始字符设备访问 SIPC，不依赖 termios。查询有白名单，同一个设备通过跨进程锁避免串包。`w202-cellular` 建立 CID1 IPv4 数据连接，配置 `sipa_eth0`、动态地址/DNS、源策略路由和断线重连。这里的“拨号”指建立数据连接，APN 是接入点，CID 是会话编号，不拨电话号码。
-
-`w202-modem-runtime` 配合本项目内核模块准备 AVB/CP、启动本机原厂 loader 和 NV 服务。当前 Server 已验证 SIM 注册、数据连接和绑定蜂窝源地址的 HTTPS。历史 CAICT 下载 314.96 Mbps / 上传 21.51 Mbps 属于历史测量，不是每个内核的测速承诺。
-
-2026-11-07 用户确认 KDE 上的手机 → Wi-Fi 5／5 GHz／80 MHz 热点 → 蜂窝出口链路验收通过，端到端测速为 663 Mbps、103 Mbps，未标注上下行方向。这是蜂窝联网与热点共享结果，不作为独立的 Wi-Fi 局域网吞吐。
-
-## 构建输入输出
-
-在本地交叉工具链环境、本目录执行：
+内核模块、设备树和固件输入分别在 `../{source,devicetree,firmware}/`。
+`ModemManager/` 是普通受控源码快照，基于上游提交 `dfa41adf391b090720fb1ea56d884f61ea7fba29` 并包含本项目适配，不是嵌套子模块。
 
 ```sh
-make OUT="$PWD/output" all
-make OUT="$PWD/output" DESTDIR="$PWD/output/rootfs" install
+make OUT=/path/to/output all
+make OUT=/path/to/output DESTDIR=/path/to/staging install
+make OUT=/path/to/native-tests check
 ```
 
-输入：本目录 C/Python 源码、属性 JSON、AArch64 GCC 和 Python 3。输出：三个静态 ARM64 工具、属性文件和离线 rootfs 暂存树。构建不需要重编内核；`install` 只接受显式 `DESTDIR`，不启用服务。安装器显式将运行脚本和命令包装器设为 0755，不依赖模板源文件的权限。
+基础构建需要 AArch64 GCC 和 Python 3，生成原生 C 工具及属性区；Python 仅用于构建属性区和测试；`check` 用 HOSTCC 运行主机测试。ModemManager 适配器使用 `build-modemmanager.py --cross-file <目标SDK交叉文件>` 构建，依赖 GLib、D-Bus、GUdev、PolicyKit 和 systemd 开发文件；输出固定为 `output/userspace/modem/modemmanager`，安装树为 `output/userspace/modem/rootfs`。它只构建 W202DS 插件，不启用无关的 QMI/MBIM 后端。基础 Makefile 不隐式运行该构建。
 
-目标系统依赖 Python 3、systemd/sysusers/resolved、iproute2、kmod、util-linux（含 losetup）、Linux loop 块设备支持、核心 shell 工具，以及匹配的内核模块和本机私有运行根。默认 APN 为空，独立启动准备默认关闭；发行版集成阶段负责配置、账户创建、安装依赖和启用服务。
+目标系统需要 systemd、libc、kmod、iproute2、util-linux/loop、匹配模块和本机合法固件/NV 输入。APN 默认空，独立启动准备默认关闭；安装不启用服务或提供私有输入。
 
-## TODO / 实验中
+运行桥接与 Linux 工具保持 ABI 分离，原厂 Bionic 程序和库不随源码发布。NV 镜像长度、头和校验和必须有效，损坏输入直接报错。硬件运行配置见 [RUNTIME.md](RUNTIME.md)，服务启用、权限与连接策略由系统集成者定义。SIM 适配见 [插件测试说明](ModemManager/src/plugins/w202ds/tests/README.md)。IPv6、双卡、热拔卡和长期稳定性仍需验证。
 
-- 未适配的发行版 ModemManager 不能识别 SIPC。KDE 接入发行版自己的 ModemManager systemd 单元及 NetworkManager；旧 `w202-cellular` 停用。详见 [桌面接入](integration/README.md)。2026-11-08 当前源码通过本地 x86_64 回归和 ARM64 交叉编译，已部署 `1.24.0-w202ds-sim-hotplug-20261108`；无卡识别、热插卡自动恢复 5G／NM 联网和蜂窝 DNS／HTTPS 已实测通过，热拔卡待验。
-- 现有 runtime 显式校验 `6.18.35-w202ds-m23-wifi`。后续缩短内核名称时必须同时更新运行约定，并重新验证。
-- IPv6、双卡、SIM 热插拔真机验收、无线复位、长期稳定性仍待实现或验收。
-- `runtime/private-inputs.json` 仅描述已有准备流程所需的输入。旧 BSP 的 `server-runtime-20261103-v5/` 包作为既有运行参考保留，其中厂商依赖不是本项目的开源实现；设备 NV、IMEI 和密钥仍由本机单独提供。
+上层调用约定见 [标准接口](../../INTERFACES.md)。
 
-顶层旧文件名兼容链接已移除；源码直接使用 `at/`、`runtime/`。`ModemManager/` 自带的枚举模板链接属于上游构建结构，保留在其工程内部。目录整理后的三个 ARM64 工具、离线安装暂存，以及8项 AT 回包/锁测试均通过。
+## 启动顺序与服务身份
 
-2026-11-07 本轮重新在本地构建三个静态工具及属性区，修复 KDE 账号与私有目录权限、补上独立 Linux 启动输入；SIM READY、5G 注册、原生 NM 连接、断开重连和运行服务重启后自动连接均通过。两次恢复后绑定 `sipa_eth0` 的 HTTPS 200 及蜂窝 DNS 通过。Wi-Fi 保持连接；冷启动与长期运行待验收，当前不宣称完成全部基带功能。
+`w202-modem-ordered.conf` 禁止 udev 按设备别名抢先加载基带模块，显式服务加载仍允许。IPC 驱动须在 Trusty core 创建子设备之前注册，避免传输层在接收队列尚不存在时启动。
 
-`tests/test_modem_at.py` 配合本机编译的 `modem-at-fixture.c` 检查回包和锁；测试不启用无线电。loader 锁测试仅适用于匹配的进程所有权实现，不作为自动启动程序。
-
-2026-11-07 NV 修复已部署：`runtime/w202-modem-storage.py` 安装为 `/usr/libexec/w202-modem-storage`，提供 `prepare`、`verify`、`release`，校验镜像长度、NV 头和校验和及 loop 映射；损坏的旧文件直接报错，不补零伪造 NV。原厂 diskserver 的截断打开和脏扇区写入通过 loop 保持块设备语义。六项本地测试及真机截断／局部写对照通过；普通重启后自动联网和原厂服务实际保存 NV 后，镜像容量、校验及原厂分区哈希均通过。运行说明见 [集成说明](integration/README.md)，本地交付保留于 `releases/kde-nv-loop-20261107-v1/`。
-
-2026-11-08 SIM 热插拔修复：W202DS MM 插件监听原厂 RIL 使用的 `+ECIND: 3,...` 通知，随后通过 MM 串行命令队列发送不缓存的 `+CPIN?`。明确返回“SIM 未插入”才停用并重探测，清除旧 SIM 和网络对象；无卡时继续保留 AT 通知通道，插卡后重新识别。注册状态变化只触发确认查询，掉网、超时和普通 SIM 错误不会直接判为拔卡。没有新增轮询服务或内核修改。本地两项 SIM 单元测试、三项 AT 串口测试和八项模拟流程检查通过；构建和复现方法见 [SIM 测试说明](ModemManager/src/plugins/w202ds/tests/README.md)。ARM64 新版已部署：无卡启动识别正确，实际插卡后自动重探测并恢复 5G／NM 连接；绑定蜂窝源地址的 DNS 及绑定 `sipa_eth0`、校验证书的 HTTPS 200 通过，MM 进程未重启。热拔卡测试由用户暂缓，KDE GUI、PIN 锁卡及长期稳定性待验收。
+私有运行目录保留 root 所有权；`private-root` 按当前系统的 `w202modem` 组恢复目录遍历权限和私有设备访问权限。不能依赖归档中的数字 UID/GID，也不能将代码目录改为服务账号可写。

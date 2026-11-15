@@ -17,7 +17,7 @@ make install DESTDIR=/path/to/rootfs
 此命令仅暂存文件。将匹配的 `w202_hub_iio.ko` 安装到 `/lib/modules/$(uname -r)/updates/w202ds/`，运行 `depmod -a`，安装发行版 `iio-sensor-proxy`，启用 `w202-sensorhub.service`。CH 由现有基带运行时启动；此处不下载固件、不写 NV、不复位处理器。
 
 安装时须同时提供现有基带运行时的服务、工具、匹配模块及固件；单独安装 Sensor Hub
-服务不能启动 CH。组件选择、服务启用和桌面策略由 REIMUKS 负责，本目录只提供模板。
+服务不能启动 CH。组件选择、服务启用和桌面策略由 发行版集成层 负责，本目录只提供模板。
 
 ## 离线检查
 
@@ -39,13 +39,13 @@ make check OUT=/path/to/native-output HOSTCC=cc
 光照不变时仍有效。停止读取 5 秒后关闭采样，下次启用重新等待首帧。该缓存行为须保留。
 键盘拆装通过独立 input 设备 `W202DS Tablet Mode` 上报 `SW_TABLET_MODE`，不依赖 CH。
 
-2026-11-08 本机 KDE 上，SensorProxy 已报告 `HasAccelerometer=true`、`HasAmbientLight=true`，可输出 right-up 方向和约 160 lux。SSH 会话不是本地活动桌面会话，命令行验收可用 `sudo monitor-sensor --accel --light`；不为远程测试放宽传感器访问策略。
+消费者可通过 SensorProxy 的 `HasAccelerometer`、`HasAmbientLight` 和方向/照度属性验证接入。命令行工具 `monitor-sensor --accel --light` 受系统会话授权约束，不应为远程测试放宽访问策略。
 
 ## 方向与验证边界
 
 原生面板为竖屏 1200×1920，键盘支架横屏时原始重力主分量在 +X；当前矩阵 `diag(-1, -1, 1)` 在此姿态报告 right-up。转动记录已捕获 normal、left-up、right-up、bottom-up 四种方向和倾斜变化；每个状态与实物方向的对应仍待标记核对。自动旋转及亮度策略由桌面管理，其界面和联动效果未验收。
 
-本轮传感器数据读取与动态响应已获用户验收。
+传感器数据读取、实物方向映射和上层响应应分别验收。
 
 TODO：核对带方向标记的安装矩阵、桌面联动和挂起恢复；光强标定另验。
 

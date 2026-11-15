@@ -1,0 +1,910 @@
+diff --git a/meson.build b/meson.build
+index 622970f..b4d4ee2 100644
+--- a/meson.build
++++ b/meson.build
+@@ -16,10 +16,9 @@ project(
+     'build.rust_std=2021',
+   ],
+ )
+-add_project_link_arguments(
+-  '-llog',
+-  language : ['c', 'cpp'],
+-)
++if host_machine.system() == 'android'
++  add_project_link_arguments('-llog', language : ['c', 'cpp'])
++endif
+ project_version = meson.project_version()
+ 
+ if host_machine.system() == 'darwin'
+diff --git a/src/panfrost/vulkan/jm/panvk_event.h b/src/panfrost/vulkan/jm/panvk_event.h
+index 91bea83..4bfdfaf 100644
+--- a/src/panfrost/vulkan/jm/panvk_event.h
++++ b/src/panfrost/vulkan/jm/panvk_event.h
+@@ -6,14 +6,13 @@
+ #ifndef PANVK_EVENT_H
+ #define PANVK_EVENT_H
+ 
+-#include <stdbool.h>
+ #include <stdint.h>
+ 
+ #include "vk_object.h"
+ 
+ struct panvk_event {
+    struct vk_object_base base;
+-   bool signaled;
++   uint32_t syncobj;
+ };
+ 
+ VK_DEFINE_NONDISP_HANDLE_CASTS(panvk_event, base, VkEvent, VK_OBJECT_TYPE_EVENT)
+diff --git a/src/panfrost/vulkan/jm/panvk_queue.h b/src/panfrost/vulkan/jm/panvk_queue.h
+index 6d8364b..52bcc2a 100644
+--- a/src/panfrost/vulkan/jm/panvk_queue.h
++++ b/src/panfrost/vulkan/jm/panvk_queue.h
+@@ -15,29 +15,10 @@
+ #include "panvk_device.h"
+ 
+ #include "vk_queue.h"
+-#include "vk_sync.h"
+ 
+ struct panvk_gpu_queue {
+    struct vk_queue vk;
+-   /* Set once the very first job on this queue has been submitted.
+-    * Used to gate a synchronous retry-with-backoff, working around
+-    * a kbase job-slot watchdog vs. cold GPU power domain. */
+-   bool warmed_up;
+-   bool frag_warmed_up;
+-   struct vk_sync *sync;
+-   /* Last atom submitted on this queue; submits without GPU work must still
+-    * signal only after all previously submitted work has completed. */
+-   uint64_t last_submitted_atom;
+-   /* Previous fragment atom: the tiler heap is shared, so a new tiler job must
+-    * not start until the previous fragment job has consumed the heap. */
+-   uint64_t last_frag_atom;
+-   /* GPU atom this submit's first job must wait for (from wait semaphores). */
+-   uint64_t in_dep;
+-   /* Last atom submitted on this queue (vtc/compute or frag). */
+-   uint64_t last_any_atom;
+-   /* v67b: last fragment atom per tiler heap half, last vtc atom */
+-   uint64_t half_frag_atom[2];
+-   uint64_t last_vtc_atom;
++   uint32_t sync;
+ };
+ 
+ VK_DEFINE_HANDLE_CASTS(panvk_gpu_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
+diff --git a/src/panfrost/vulkan/jm/panvk_vX_event.c b/src/panfrost/vulkan/jm/panvk_vX_event.c
+index 3ff8e58..248569b 100644
+--- a/src/panfrost/vulkan/jm/panvk_vX_event.c
++++ b/src/panfrost/vulkan/jm/panvk_vX_event.c
+@@ -21,7 +21,16 @@ panvk_per_arch(CreateEvent)(VkDevice _device,
+    if (!event)
+       return panvk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
+-   event->signaled = false;
++   struct drm_syncobj_create create = {
++      .flags = 0,
++   };
++
++   int ret = pan_kmod_ioctl(device->drm_fd, DRM_IOCTL_SYNCOBJ_CREATE,
++                            &create);
++   if (ret)
++      return panvk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++   event->syncobj = create.handle;
+    *pEvent = panvk_event_to_handle(event);
+ 
+    return VK_SUCCESS;
+@@ -37,23 +46,58 @@ panvk_per_arch(DestroyEvent)(VkDevice _device, VkEvent _event,
+    if (!event)
+       return;
+ 
++   struct drm_syncobj_destroy destroy = {.handle = event->syncobj};
++   pan_kmod_ioctl(device->drm_fd, DRM_IOCTL_SYNCOBJ_DESTROY, &destroy);
++
+    vk_object_free(&device->vk, pAllocator, event);
+ }
+ 
+ VKAPI_ATTR VkResult VKAPI_CALL
+ panvk_per_arch(GetEventStatus)(VkDevice _device, VkEvent _event)
+ {
++   VK_FROM_HANDLE(panvk_device, device, _device);
+    VK_FROM_HANDLE(panvk_event, event, _event);
+-
+-   return event->signaled ? VK_EVENT_SET : VK_EVENT_RESET;
++   bool signaled;
++
++   struct drm_syncobj_wait wait = {
++      .handles = (uintptr_t)&event->syncobj,
++      .count_handles = 1,
++      .timeout_nsec = 0,
++      .flags = DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT,
++   };
++
++   int ret = pan_kmod_ioctl(device->drm_fd, DRM_IOCTL_SYNCOBJ_WAIT, &wait);
++   if (ret) {
++      if (errno == ETIME)
++         signaled = false;
++      else {
++         assert(0);
++         return VK_ERROR_DEVICE_LOST; /* TODO */
++      }
++   } else
++      signaled = true;
++
++   return signaled ? VK_EVENT_SET : VK_EVENT_RESET;
+ }
+ 
+ VKAPI_ATTR VkResult VKAPI_CALL
+ panvk_per_arch(SetEvent)(VkDevice _device, VkEvent _event)
+ {
++   VK_FROM_HANDLE(panvk_device, device, _device);
+    VK_FROM_HANDLE(panvk_event, event, _event);
+ 
+-   event->signaled = true;
++   struct drm_syncobj_array objs = {
++      .handles = (uint64_t)(uintptr_t)&event->syncobj,
++      .count_handles = 1};
++
++   /* This is going to just replace the fence for this syncobj with one that
++    * is already in signaled state. This won't be a problem because the spec
++    * mandates that the event will have been set before the vkCmdWaitEvents
++    * command executes.
++    * https://docs.vulkan.org/spec/latest/chapters/cmdbuffers.html#commandbuffers-submission-progress
++    */
++   if (pan_kmod_ioctl(device->drm_fd, DRM_IOCTL_SYNCOBJ_SIGNAL, &objs))
++      return VK_ERROR_DEVICE_LOST;
+ 
+    return VK_SUCCESS;
+ }
+@@ -61,9 +105,15 @@ panvk_per_arch(SetEvent)(VkDevice _device, VkEvent _event)
+ VKAPI_ATTR VkResult VKAPI_CALL
+ panvk_per_arch(ResetEvent)(VkDevice _device, VkEvent _event)
+ {
++   VK_FROM_HANDLE(panvk_device, device, _device);
+    VK_FROM_HANDLE(panvk_event, event, _event);
+ 
+-   event->signaled = false;
++   struct drm_syncobj_array objs = {
++      .handles = (uint64_t)(uintptr_t)&event->syncobj,
++      .count_handles = 1};
++
++   if (pan_kmod_ioctl(device->drm_fd, DRM_IOCTL_SYNCOBJ_RESET, &objs))
++      return VK_ERROR_DEVICE_LOST;
+ 
+    return VK_SUCCESS;
+ }
+diff --git a/src/panfrost/vulkan/jm/panvk_vX_gpu_queue.c b/src/panfrost/vulkan/jm/panvk_vX_gpu_queue.c
+index 1796454..2ca5e5f 100644
+--- a/src/panfrost/vulkan/jm/panvk_vX_gpu_queue.c
++++ b/src/panfrost/vulkan/jm/panvk_vX_gpu_queue.c
+@@ -9,12 +9,10 @@
+  * SPDX-License-Identifier: MIT
+  */
+ 
+-#include "../../lib/pan_trace_gate.h"
+ #include "genxml/gen_macros.h"
+ 
+ #include "decode.h"
+-
+-#include "kmod/kbase_kmod.h"
++#include "util/libsync.h"
+ 
+ #include "panvk_cmd_buffer.h"
+ #include "panvk_device.h"
+@@ -27,67 +25,87 @@
+ #include "panvk_priv_bo.h"
+ #include "panvk_queue.h"
+ 
++#include "vk_drm_syncobj.h"
+ #include "vk_framebuffer.h"
+-#include "vk_sync.h"
+-
+-/* ---- P4 trace ---- */
+-#include <stdio.h>
+-#include <unistd.h>
+-
+-/* ---- PANVK_TRACE gate: debug fprintf(stderr) only when PANVK_TRACE=1 ---- */
+-#include <stdio.h>
+-#include <stdlib.h>
+-#ifdef PANVK_TRACE_BUILD
+-static inline int panvk_trace_on_(void) { static int v = -1; if (v < 0) { const char *e = getenv("PANVK_TRACE"); v = (e && e[0] == '1'); } return v; }
+-#else
+-#define panvk_trace_on_() 0
+-#endif
+-#define fprintf(f, ...) (((f) == stderr && !panvk_trace_on_()) ? 0 : fprintf(f, __VA_ARGS__))
+-/* ---- end gate ---- */
+-#define P4_WAIT(d, a, t) ({ uint64_t _p4a = (a); long long _p4t = (t); \
+-   (void)0; \
+-   __auto_type _p4r = kbase_kmod_wait_atom((d), _p4a, _p4t); \
+-   (void)0; \
+-   _p4r; })
+-/* ---- end P4 ---- */
+-
+-/* kbase job atoms don't support GPU-side pre_dep chaining the way DRM
+- * syncobjs do (kbase_kmod_job_submit() always leaves pre_dep unset), so
+- * ordering between the vertex/tiler job and the fragment job within one
+- * batch is enforced with a CPU-side wait here. Ordering against *other*
+- * queue submissions is instead handled lazily: we never block here, we
+- * just record the atom numbers and hand them to panvk_kbase_sync_set_pending()
+- * so a future vk_sync_wait() on queue->sync (or a signal semaphore) does
+- * the actual blocking, off the submission's critical path. */
+-
+-/* v67b: vertex/tiler work overlaps the previous pass (PANVK_OVERLAP=0: off) */
+-#include <stdlib.h>
+-static __attribute__((unused)) bool
+-panvk_overlap_enabled(void)
++
++#include "drm-uapi/panfrost_drm.h"
++
++/* An empty batch cannot be submitted with jc=0 on Panfrost. Merge the
++ * incoming fences instead, preserving waits without blocking the CPU. */
++static VkResult
++panvk_queue_merge_syncs(struct panvk_gpu_queue *queue,
++                       const uint32_t *syncs, unsigned count)
++{
++   struct panvk_device *dev = to_panvk_device(queue->vk.base.device);
++   int merged = -1;
++
++   for (unsigned i = 0; i < count; i++) {
++      int fd = -1;
++      if (drmSyncobjExportSyncFile(dev->drm_fd, syncs[i], &fd))
++         goto fail;
++      if (merged < 0) {
++         merged = fd;
++      } else {
++         int next = sync_merge("panvk-empty", merged, fd);
++         close(fd);
++         if (next < 0)
++            goto fail;
++         close(merged);
++         merged = next;
++      }
++   }
++
++   if (merged >= 0) {
++      int ret = drmSyncobjImportSyncFile(dev->drm_fd, queue->sync, merged);
++      close(merged);
++      if (ret)
++         return vk_queue_set_lost(&queue->vk, "Cannot import merged fence");
++   }
++   return VK_SUCCESS;
++
++fail:
++   if (merged >= 0)
++      close(merged);
++   return vk_queue_set_lost(&queue->vk, "Cannot merge empty-submit fences");
++}
++
++static void
++panvk_reset_job(void *job)
+ {
+-   static int on = -1;
+-   if (on < 0) {
+-      const char *e = getenv("PANVK_OVERLAP");
+-      on = !(e && e[0] == '0');
++   memset(job, 0, 4 * 4);
++#if PAN_ARCH == 9
++   pan_unpack((const struct mali_job_header_packed *)job, JOB_HEADER, header);
++   if (header.type == MALI_JOB_TYPE_MALLOC_VERTEX) {
++      /* IDVS writes the allocated vertex-array address/strides into
++       * the DCD. A replay must request a fresh packet allocation. */
++      pan_section_unpack(job, MALLOC_VERTEX_JOB, DRAW, draw);
++      draw.vertex_array = (struct MALI_VERTEX_ARRAY){.packet = true};
++      pan_section_pack(job, MALLOC_VERTEX_JOB, DRAW, cfg) {
++         cfg = draw;
++      }
+    }
+-   return on;
++#endif
+ }
+-static uint64_t
++
++static VkResult
+ panvk_queue_submit_batch(struct panvk_gpu_queue *queue,
+                          struct panvk_cmd_buffer *cmdbuf,
+-                         struct panvk_batch *batch, struct pan_kmod_bo **bos,
+-                         unsigned nr_bos, uint64_t *out_frag_atom)
++                         struct panvk_batch *batch, uint32_t *bos,
++                         unsigned nr_bos, uint32_t *in_fences,
++                         unsigned nr_in_fences)
+ {
+    struct panvk_device *dev = to_panvk_device(queue->vk.base.device);
+    struct panvk_physical_device *phys_dev =
+       to_panvk_physical_device(dev->vk.physical);
+-   uint64_t vtc_atom = 0, frag_atom = 0;
+-   (void)0;
++   int ret;
++
++   if (!batch->vtc_jc.first_job && !batch->frag_jc.first_job)
++      return panvk_queue_merge_syncs(queue, in_fences, nr_in_fences);
+ 
+    /* Reset the batch if it's already been issued */
+    if (batch->issued) {
+       util_dynarray_foreach(&batch->jobs, void *, job)
+-         memset((*job), 0, 4 * 4);
++         panvk_reset_job(*job);
+ 
+       /* Reset the tiler before re-issuing the batch */
+       if (batch->tiler.ctx_descs.cpu) {
+@@ -110,39 +128,24 @@ panvk_queue_submit_batch(struct panvk_gpu_queue *queue,
+    pan_kmod_flush_bo_map_syncs(dev->kmod.dev);
+ 
+    if (batch->vtc_jc.first_job) {
+-         if (unlikely(!queue->warmed_up)) {
+-         uint32_t vtc_core_req = (BASE_JD_REQ_CS | BASE_JD_REQ_T | BASE_JD_REQ_V);
+-            /* The first vertex/tiler/compute chain must be submitted too
+-             * (it can be a buffer upload the app relies on). Submit it
+-             * synchronously, the same way the first fragment job is. */
+-            if (queue->in_dep) {
+-               kbase_kmod_wait_atom(dev->kmod.dev, queue->in_dep, -1);
+-               queue->in_dep = 0;
+-            }
+-            kbase_kmod_job_submit_retry(dev->kmod.dev, batch->vtc_jc.first_job,
+-                                        vtc_core_req, bos, nr_bos, NULL, 0, 5);
+-            vtc_atom = 0; /* already waited for */
+-            queue->warmed_up = true;
+-         } else {
+-         uint32_t vtc_core_req = (BASE_JD_REQ_CS | BASE_JD_REQ_T | BASE_JD_REQ_V);
+-            const bool v67_ov = panvk_overlap_enabled() && batch->frag_jc.first_job &&
+-                                !queue->in_dep && queue->frag_warmed_up; /* v67b */
+-            vtc_atom = kbase_kmod_job_submit_dep(dev->kmod.dev, batch->vtc_jc.first_job, vtc_core_req, bos, nr_bos,
+-                (v67_ov ? queue->half_frag_atom[batch->heap_half & 1] : /* v67b */
+-                 (queue->last_any_atom ? queue->last_any_atom : queue->last_frag_atom)),
+-                BASE_JD_DEP_TYPE_ORDER, v67_ov ? queue->last_vtc_atom : queue->in_dep,
+-                BASE_JD_DEP_TYPE_ORDER,
+-                batch->frag_jc.first_job != 0 && queue->frag_warmed_up);
+-            assert(vtc_atom);
+-            queue->last_vtc_atom = vtc_atom; /* v67b */
+-            queue->in_dep = 0;
+-            queue->last_any_atom = vtc_atom;
++      struct drm_panfrost_submit submit = {
++         .bo_handles = (uintptr_t)bos,
++         .bo_handle_count = nr_bos,
++         .in_syncs = (uintptr_t)in_fences,
++         .in_sync_count = nr_in_fences,
++         .out_sync = queue->sync,
++         .jc = batch->vtc_jc.first_job,
++      };
++
++      ret = pan_kmod_ioctl(dev->drm_fd, DRM_IOCTL_PANFROST_SUBMIT, &submit);
++      if (ret)
++         return vk_queue_set_lost(&queue->vk, "Panfrost job submit failed");
+ 
+       if (PANVK_DEBUG(TRACE) || PANVK_DEBUG(SYNC)) {
+-         ASSERTED bool done =
+-            P4_WAIT(dev->kmod.dev, vtc_atom, -1);
+-         assert(done);
+-            vtc_atom = 0; /* already waited+consumed above; don't wait again in wait_one() */
++         ret = drmSyncobjWait(dev->drm_fd, &submit.out_sync, 1, INT64_MAX, 0,
++                              NULL);
++         if (ret)
++            return vk_queue_set_lost(&queue->vk, "Panfrost debug wait failed");
+ 
+          /* If we want to read the descriptors back, we need to invalidate the
+           * whole desc pool, otherwise we might end up with stale data. */
+@@ -151,109 +154,97 @@ panvk_queue_submit_batch(struct panvk_gpu_queue *queue,
+       }
+ 
+       if (PANVK_DEBUG(TRACE)) {
+-         /* skip pandecode_jc */
++         pandecode_jc(dev->debug.decode_ctx, batch->vtc_jc.first_job,
++                      phys_dev->kmod.dev->props.gpu_id);
+       }
+ 
+       if (PANVK_DEBUG(DUMP))
+          pandecode_dump_mappings(dev->debug.decode_ctx);
+ 
+       if (PANVK_DEBUG(SYNC))
+-         pandecode_abort_on_fault(dev->debug.decode_ctx, batch->vtc_jc.first_job,
++         pandecode_abort_on_fault(dev->debug.decode_ctx, submit.jc,
+                                   phys_dev->kmod.dev->props.gpu_id);
+-   
+-         } /* end !warmed_up else */
+-      }
++   }
+ 
+    if (batch->frag_jc.first_job) {
+-      /* The fragment job depends on the vertex/tiler job. kbase atoms can't
+-       * express that dependency for us, so block on the CPU here before
+-       * submitting the fragment job. */
+-      if (vtc_atom && unlikely(!queue->frag_warmed_up)) {
+-         bool done = P4_WAIT(dev->kmod.dev, vtc_atom, 16000000);
+-         (void)0;
+-
+-         if (!done) {
+-            (void)0;
+-         }
++      struct drm_panfrost_submit submit = {
++         .bo_handles = (uintptr_t)bos,
++         .bo_handle_count = nr_bos,
++         .out_sync = queue->sync,
++         .jc = batch->frag_jc.first_job,
++         .requirements = PANFROST_JD_REQ_FS,
++      };
++
++      if (batch->vtc_jc.first_job) {
++         submit.in_syncs = (uintptr_t)(&queue->sync);
++         submit.in_sync_count = 1;
++      } else {
++         submit.in_syncs = (uintptr_t)in_fences;
++         submit.in_sync_count = nr_in_fences;
+       }
+ 
+-      if (unlikely(!queue->frag_warmed_up)) {
+-         if (queue->in_dep) {
+-            kbase_kmod_wait_atom(dev->kmod.dev, queue->in_dep, -1);
+-            queue->in_dep = 0;
+-         }
+-         (void)0;
+-         bool ok = kbase_kmod_job_submit_retry(
+-            dev->kmod.dev, batch->frag_jc.first_job, BASE_JD_REQ_FS,
+-            bos, nr_bos, NULL, 0, 5);
+-         queue->frag_warmed_up = true;
+-         (void)0;
+-         frag_atom = 0;
+-      } else {
+-         frag_atom = kbase_kmod_job_submit_dep(dev->kmod.dev, batch->frag_jc.first_job,
+-                                             BASE_JD_REQ_FS, bos, nr_bos,
+-                                             vtc_atom ? vtc_atom : queue->last_any_atom,
+-                                             vtc_atom ? BASE_JD_DEP_TYPE_DATA : BASE_JD_DEP_TYPE_ORDER,
+-                                             (panvk_overlap_enabled() && vtc_atom && !queue->in_dep)
+-                                                ? queue->last_frag_atom : queue->in_dep, /* v67b */
+-                                             BASE_JD_DEP_TYPE_ORDER, false);
+-         assert(frag_atom);
+-         queue->half_frag_atom[batch->heap_half & 1] = frag_atom; /* v67b */
+-         queue->last_frag_atom = frag_atom; queue->last_any_atom = frag_atom;
+-         if (!vtc_atom) {
+-            static int fo = 0;
+-            if (fo++ < 3) (void)0;
+-         }
+-         queue->in_dep = 0;
++      ret = pan_kmod_ioctl(dev->drm_fd, DRM_IOCTL_PANFROST_SUBMIT, &submit);
++      if (ret)
++         return vk_queue_set_lost(&queue->vk, "Panfrost fragment submit failed");
++      if (PANVK_DEBUG(TRACE) || PANVK_DEBUG(SYNC)) {
++         ret = drmSyncobjWait(dev->drm_fd, &submit.out_sync, 1, INT64_MAX, 0,
++                              NULL);
++         if (ret)
++            return vk_queue_set_lost(&queue->vk, "Panfrost debug wait failed");
++
++         /* If we want to read the descriptors back, we need to invalidate the
++          * whole desc pool, otherwise we might end up with stale data. */
++         panvk_pool_invalidate_maps(&cmdbuf->desc_pool);
++         pan_kmod_flush_bo_map_syncs(dev->kmod.dev);
+       }
+ 
+-      (void)0;
+       if (PANVK_DEBUG(TRACE))
+-         /* skip pandecode_jc */
++         pandecode_jc(dev->debug.decode_ctx, batch->frag_jc.first_job,
++                      phys_dev->kmod.dev->props.gpu_id);
+ 
+       if (PANVK_DEBUG(DUMP))
+          pandecode_dump_mappings(dev->debug.decode_ctx);
+ 
+-      /* tex4: do not pandecode fragment before wait */
++      if (PANVK_DEBUG(SYNC))
++         pandecode_abort_on_fault(dev->debug.decode_ctx, submit.jc,
++                                  phys_dev->kmod.dev->props.gpu_id);
+    }
+ 
+    if (PANVK_DEBUG(TRACE))
+       pandecode_next_frame(dev->debug.decode_ctx);
+ 
+    batch->issued = true;
+-
+-   *out_frag_atom = frag_atom;
+-   return frag_atom ? frag_atom : vtc_atom;
++   return VK_SUCCESS;
+ }
+ 
+-/* kbase has no kernel wait primitive for VkEvent (see panvk_event.h), so
+- * events are tracked as a plain host-side flag and waited on with a
+- * simple spin. */
+-static void
+-panvk_wait_event_ops(struct panvk_batch *batch)
++static VkResult
++panvk_queue_transfer_sync(struct panvk_gpu_queue *queue, uint32_t syncobj)
+ {
+-   util_dynarray_foreach(&batch->event_ops, struct panvk_cmd_event_op, op) {
+-      if (op->type != PANVK_EVENT_OP_WAIT)
+-         continue;
+-
+-      while (!op->event->signaled)
+-         usleep(100);
+-   }
++   struct panvk_device *dev = to_panvk_device(queue->vk.base.device);
++   int fd = -1;
++   if (drmSyncobjExportSyncFile(dev->drm_fd, queue->sync, &fd))
++      return vk_queue_set_lost(&queue->vk, "Cannot export queue fence");
++   int ret = drmSyncobjImportSyncFile(dev->drm_fd, syncobj, fd);
++   close(fd);
++   if (ret)
++      return vk_queue_set_lost(&queue->vk, "Cannot import signal fence");
++   return VK_SUCCESS;
+ }
+ 
+ static void
+-panvk_apply_event_ops(struct panvk_batch *batch)
++panvk_add_wait_event_syncobjs(struct panvk_batch *batch, uint32_t *in_fences,
++                              unsigned *nr_in_fences)
+ {
+    util_dynarray_foreach(&batch->event_ops, struct panvk_cmd_event_op, op) {
+       switch (op->type) {
+       case PANVK_EVENT_OP_SET:
+-         op->event->signaled = true;
++         /* Nothing to do yet */
+          break;
+       case PANVK_EVENT_OP_RESET:
+-         op->event->signaled = false;
++         /* Nothing to do yet */
+          break;
+       case PANVK_EVENT_OP_WAIT:
+-         /* Handled before submission in panvk_wait_event_ops(). */
++         in_fences[(*nr_in_fences)++] = op->event->syncobj;
+          break;
+       default:
+          UNREACHABLE("bad panvk_cmd_event_op type\n");
+@@ -261,42 +252,40 @@ panvk_apply_event_ops(struct panvk_batch *batch)
+    }
+ }
+ 
+-/* wait_func passed to panvk_kbase_sync_set_pending(): blocks on whichever
+- * kbase atom numbers are non-zero in targets[]. */
+ static VkResult
+-panvk_jm_kbase_wait_atoms(void *data, const uint64_t targets[PANVK_KBASE_SYNC_TARGET_COUNT],
+-                          uint64_t abs_timeout_ns)
++panvk_signal_event_syncobjs(struct panvk_gpu_queue *queue,
++                            struct panvk_batch *batch)
+ {
+-   struct pan_kmod_dev *kmod_dev = data;
+-
+-   int64_t timeout_ns;
+-   if (abs_timeout_ns == UINT64_MAX) {
+-      timeout_ns = -1;
+-   } else {
+-      struct timespec now;
+-      clock_gettime(CLOCK_MONOTONIC_RAW, &now);
+-      int64_t now_ns = (int64_t)now.tv_sec * 1000000000ll + now.tv_nsec;
+-      timeout_ns = (int64_t)abs_timeout_ns - now_ns;
+-      if (timeout_ns < 0)
+-         timeout_ns = 0;
+-   }
++   struct panvk_device *dev = to_panvk_device(queue->vk.base.device);
+ 
+-   for (unsigned i = 0; i < PANVK_KBASE_SYNC_TARGET_COUNT; i++) {
+-      if (!targets[i])
+-         continue;
+-      if (!P4_WAIT(kmod_dev, targets[i], timeout_ns))
+-         {
+-         if (abs_timeout_ns != UINT64_MAX) {
+-            struct timespec now2;
+-            clock_gettime(CLOCK_MONOTONIC_RAW, &now2);
+-            int64_t now2_ns = (int64_t)now2.tv_sec * 1000000000ll + now2.tv_nsec;
+-            if (now2_ns >= (int64_t)abs_timeout_ns)
+-               return VK_TIMEOUT;
+-         }
+-         return VK_ERROR_DEVICE_LOST;
++   util_dynarray_foreach(&batch->event_ops, struct panvk_cmd_event_op, op) {
++      switch (op->type) {
++      case PANVK_EVENT_OP_SET: {
++         VkResult result = panvk_queue_transfer_sync(queue, op->event->syncobj);
++         if (result != VK_SUCCESS)
++            return result;
++         break;
+       }
+-   }
++      case PANVK_EVENT_OP_RESET: {
++         struct panvk_event *event = op->event;
+ 
++         struct drm_syncobj_array objs = {
++            .handles = (uint64_t)(uintptr_t)&event->syncobj,
++            .count_handles = 1};
++
++         ASSERTED int ret = pan_kmod_ioctl(dev->drm_fd,
++                                  DRM_IOCTL_SYNCOBJ_RESET, &objs);
++         if (ret)
++            return vk_queue_set_lost(&queue->vk, "Cannot reset event syncobj");
++         break;
++      }
++      case PANVK_EVENT_OP_WAIT:
++         /* Nothing left to do */
++         break;
++      default:
++         UNREACHABLE("bad panvk_cmd_event_op type\n");
++      }
++   }
+    return VK_SUCCESS;
+ }
+ 
+@@ -305,55 +294,26 @@ panvk_per_arch(gpu_queue_submit)(struct vk_queue *vk_queue, struct vk_queue_subm
+ {
+    struct panvk_gpu_queue *queue = container_of(vk_queue, struct panvk_gpu_queue, vk);
+    struct panvk_device *dev = to_panvk_device(queue->vk.base.device);
+-   (void)0;
+-
+-   uint64_t targets[PANVK_KBASE_SYNC_TARGET_COUNT] = {0};
+-   unsigned ntargets = 0;
+-
+-   if (submit->wait_count) {
+-      (void)0;
+-
+-      VkResult result = VK_SUCCESS;
+-      uint64_t in_atoms[8];
+-      unsigned n_in = 0;
+-      for (uint32_t w = 0; w < submit->wait_count && result == VK_SUCCESS; w++) {
+-         uint64_t wt[PANVK_KBASE_SYNC_TARGET_COUNT] = {0};
+-         int k = panvk_kbase_sync_gpu_wait_targets(submit->waits[w].sync, wt);
+-         if (k == 1)
+-            continue;
+-         if (k == 2) {
+-            for (unsigned t = 0; t < PANVK_KBASE_SYNC_TARGET_COUNT; t++) {
+-               if (!wt[t])
+-                  continue;
+-               if (n_in < ARRAY_SIZE(in_atoms))
+-                  in_atoms[n_in++] = wt[t];
+-               else
+-                  kbase_kmod_wait_atom(dev->kmod.dev, wt[t], -1);
+-            }
+-            continue;
+-         }
+-         /* wait-before-signal or foreign sync: fall back to a CPU wait */
+-         result = vk_sync_wait(&dev->vk, submit->waits[w].sync,
+-                               submit->waits[w].wait_value,
+-                               VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
+-      }
+-      /* One atom goes to the GPU as a pre-dependency, extra ones are
+-       * waited on the CPU (rare). */
+-      for (unsigned a = 1; a < n_in; a++)
+-         kbase_kmod_wait_atom(dev->kmod.dev, in_atoms[a], -1);
+-      queue->in_dep = n_in ? in_atoms[0] : 0;
+ 
+-      (void)0;
++   unsigned nr_semaphores = submit->wait_count + 1;
++   uint32_t semaphores[nr_semaphores];
+ 
+-      if (result != VK_SUCCESS)
+-         return result;
++   semaphores[0] = queue->sync;
++   for (unsigned i = 0; i < submit->wait_count; i++) {
++      assert(vk_sync_type_is_drm_syncobj(submit->waits[i].sync->type));
++      struct vk_drm_syncobj *syncobj =
++         vk_sync_as_drm_syncobj(submit->waits[i].sync);
++
++      semaphores[i + 1] = syncobj->syncobj;
+    }
+ 
++   bool had_batch = false;
+    for (uint32_t j = 0; j < submit->command_buffer_count; ++j) {
+       struct panvk_cmd_buffer *cmdbuf =
+          container_of(submit->command_buffers[j], struct panvk_cmd_buffer, vk);
+ 
+       list_for_each_entry(struct panvk_batch, batch, &cmdbuf->batches, node) {
++         had_batch = true;
+          /* FIXME: should be done at the batch level */
+          unsigned nr_bos = panvk_pool_num_bos(&cmdbuf->desc_pool) +
+                            panvk_pool_num_bos(&cmdbuf->varying_pool) +
+@@ -362,30 +322,30 @@ panvk_per_arch(gpu_queue_submit)(struct vk_queue *vk_queue, struct vk_queue_subm
+                            (batch->blit.dst ? 1 : 0) +
+                            (batch->vtc_jc.first_tiler ? 1 : 0) + 1;
+          unsigned bo_idx = 0;
+-         struct pan_kmod_bo *bos[nr_bos];
++         uint32_t bos[nr_bos];
+ 
+-         panvk_pool_get_bos(&cmdbuf->desc_pool, &bos[bo_idx]);
++         panvk_pool_get_bo_handles(&cmdbuf->desc_pool, &bos[bo_idx]);
+          bo_idx += panvk_pool_num_bos(&cmdbuf->desc_pool);
+ 
+-         panvk_pool_get_bos(&cmdbuf->varying_pool, &bos[bo_idx]);
++         panvk_pool_get_bo_handles(&cmdbuf->varying_pool, &bos[bo_idx]);
+          bo_idx += panvk_pool_num_bos(&cmdbuf->varying_pool);
+ 
+-         panvk_pool_get_bos(&cmdbuf->tls_pool, &bos[bo_idx]);
++         panvk_pool_get_bo_handles(&cmdbuf->tls_pool, &bos[bo_idx]);
+          bo_idx += panvk_pool_num_bos(&cmdbuf->tls_pool);
+ 
+          for (unsigned i = 0; i < batch->fb.bo_count; i++)
+-            bos[bo_idx++] = batch->fb.bos[i];
++            bos[bo_idx++] = pan_kmod_bo_handle(batch->fb.bos[i]);
+ 
+          if (batch->blit.src)
+-            bos[bo_idx++] = batch->blit.src;
++            bos[bo_idx++] = pan_kmod_bo_handle(batch->blit.src);
+ 
+          if (batch->blit.dst)
+-            bos[bo_idx++] = batch->blit.dst;
++            bos[bo_idx++] = pan_kmod_bo_handle(batch->blit.dst);
+ 
+          if (batch->vtc_jc.first_tiler)
+-            bos[bo_idx++] = dev->tiler_heap->bo;
++            bos[bo_idx++] = pan_kmod_bo_handle(dev->tiler_heap->bo);
+ 
+-         bos[bo_idx++] = dev->sample_positions->bo;
++         bos[bo_idx++] = pan_kmod_bo_handle(dev->sample_positions->bo);
+          assert(bo_idx == nr_bos);
+ 
+          /* Merge identical BO entries. */
+@@ -398,52 +358,41 @@ panvk_per_arch(gpu_queue_submit)(struct vk_queue *vk_queue, struct vk_queue_subm
+             }
+          }
+ 
+-         panvk_wait_event_ops(batch);
+-
+-         uint64_t frag_atom = 0;
+-         uint64_t last_atom =
+-            panvk_queue_submit_batch(queue, cmdbuf, batch, bos, nr_bos,
+-                                     &frag_atom);
+-
+-         if (last_atom) {
+-            queue->last_submitted_atom = last_atom;
+-            if (ntargets < PANVK_KBASE_SYNC_TARGET_COUNT) {
+-               targets[ntargets++] = last_atom;
+-            } else {
+-               /* targets[] is full (more than PANVK_KBASE_SYNC_TARGET_COUNT
+-                * batches in this submit) -- instead of silently dropping
+-                * this atom (the old bug: a dropped frag_atom means nobody
+-                * ever waits for that fragment job), wait for it
+-                * synchronously right here, same trick already used for
+-                * vtc_atom above. */
+-               /* v50c: atoms are fully ordered on this queue, the newest one covers
+-                * all earlier ones -- no CPU wait on the submit path. */
+-               kbase_kmod_atom_release(dev->kmod.dev, targets[PANVK_KBASE_SYNC_TARGET_COUNT - 1]);
+-               targets[PANVK_KBASE_SYNC_TARGET_COUNT - 1] = last_atom;
+-            }
+-         }
++         unsigned nr_in_fences = 0;
++         unsigned max_wait_event_syncobjs = util_dynarray_num_elements(
++            &batch->event_ops, struct panvk_cmd_event_op);
++         uint32_t in_fences[nr_semaphores + max_wait_event_syncobjs];
++         memcpy(in_fences, semaphores, nr_semaphores * sizeof(*in_fences));
++         nr_in_fences += nr_semaphores;
+ 
+-         panvk_apply_event_ops(batch);
+-      }
+-   }
++         panvk_add_wait_event_syncobjs(batch, in_fences, &nr_in_fences);
+ 
++         VkResult result = panvk_queue_submit_batch(
++            queue, cmdbuf, batch, bos, nr_bos, in_fences, nr_in_fences);
++         if (result != VK_SUCCESS)
++            return result;
+ 
+-   if (queue->in_dep) {
+-      if (ntargets < PANVK_KBASE_SYNC_TARGET_COUNT)
+-         targets[ntargets++] = queue->in_dep;
+-      else
+-         kbase_kmod_wait_atom(dev->kmod.dev, queue->in_dep, -1);
+-      queue->in_dep = 0;
++         result = panvk_signal_event_syncobjs(queue, batch);
++         if (result != VK_SUCCESS)
++            return result;
++      }
+    }
+-   if (ntargets == 0 && queue->last_submitted_atom)
+-      targets[ntargets++] = queue->last_submitted_atom;
+ 
+-   panvk_kbase_sync_set_pending(queue->sync, dev->kmod.dev,
+-                                panvk_jm_kbase_wait_atoms, targets);
++   if (!had_batch) {
++      VkResult result = panvk_queue_merge_syncs(queue, semaphores, nr_semaphores);
++      if (result != VK_SUCCESS)
++         return result;
++   }
+ 
++   /* Transfer the out fence to signal semaphores */
+    for (unsigned i = 0; i < submit->signal_count; i++) {
+-      panvk_kbase_sync_set_pending(submit->signals[i].sync, dev->kmod.dev,
+-                                   panvk_jm_kbase_wait_atoms, targets);
++      assert(vk_sync_type_is_drm_syncobj(submit->signals[i].sync->type));
++      struct vk_drm_syncobj *syncobj =
++         vk_sync_as_drm_syncobj(submit->signals[i].sync);
++
++      VkResult result = panvk_queue_transfer_sync(queue, syncobj->syncobj);
++      if (result != VK_SUCCESS)
++         return result;
+    }
+ 
+    return VK_SUCCESS;
+@@ -455,11 +404,9 @@ panvk_per_arch(create_gpu_queue)(struct panvk_device *device,
+                                  uint32_t queue_idx,
+                                  struct vk_queue **out_queue)
+ {
+-   struct panvk_physical_device *phys_dev =
+-      to_panvk_physical_device(device->vk.physical);
+    ASSERTED const VkDeviceQueueGlobalPriorityCreateInfoKHR *priority_info =
+       vk_find_struct_const(create_info->pNext,
+-                          DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_KHR);
++                           DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_KHR);
+    ASSERTED const VkQueueGlobalPriorityKHR priority =
+       priority_info ? priority_info->globalPriority
+                     : VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR;
+@@ -477,11 +424,12 @@ panvk_per_arch(create_gpu_queue)(struct panvk_device *device,
+    if (result != VK_SUCCESS)
+       goto err_free_queue;
+ 
+-   /* Start signaled: with nothing submitted yet, the queue is trivially idle. */
+-   result = vk_sync_create(&device->vk, &phys_dev->drm_syncobj_type, 0, 1,
+-                           &queue->sync);
+-   if (result != VK_SUCCESS)
++   int ret = drmSyncobjCreate(device->drm_fd, DRM_SYNCOBJ_CREATE_SIGNALED,
++                              &queue->sync);
++   if (ret) {
++      result = panvk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+       goto err_finish_queue;
++   }
+ 
+    queue->vk.driver_submit = panvk_per_arch(gpu_queue_submit);
+    *out_queue = &queue->vk;
+@@ -501,7 +449,7 @@ void panvk_per_arch(destroy_gpu_queue)(struct vk_queue *vk_queue)
+    struct panvk_device *dev = to_panvk_device(vk_queue->base.device);
+ 
+    vk_queue_finish(&queue->vk);
+-   vk_sync_destroy(&dev->vk, queue->sync);
++   drmSyncobjDestroy(dev->drm_fd, queue->sync);
+    vk_free(&dev->vk.alloc, queue);
+ }
+ 
+@@ -526,10 +474,11 @@ panvk_per_arch(QueueWaitIdle)(VkQueue _queue)
+       return VK_ERROR_DEVICE_LOST;
+    }
+ 
+-   VkResult result = vk_sync_wait(&dev->vk, queue->sync, 0,
+-                                  VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
+-   if (result != VK_SUCCESS)
+-      return VK_ERROR_DEVICE_LOST;
++   ASSERTED int ret = drmSyncobjWait(dev->drm_fd, &queue->sync, 1,
++                                     INT64_MAX, DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL,
++                                     NULL);
++   if (ret)
++      return vk_queue_set_lost(&queue->vk, "Panfrost idle wait failed");
+ 
+    return VK_SUCCESS;
+ }
+diff --git a/src/panfrost/vulkan/panvk_device_memory.c b/src/panfrost/vulkan/panvk_device_memory.c
+index c443644..dd082a2 100644
+--- a/src/panfrost/vulkan/panvk_device_memory.c
++++ b/src/panfrost/vulkan/panvk_device_memory.c
+@@ -115,6 +115,7 @@ panvk_AllocateMemory(VkDevice _device,
+       host_info = NULL;
+ 
+    if (host_info) {
++#ifdef HAVE_PAN_KMOD_KBASE
+       mem->bo = kbase_kmod_bo_import_host(device->kmod.dev,
+                                           (void *)host_info->pHostPointer,
+                                           pAllocateInfo->allocationSize);
+@@ -122,6 +123,10 @@ panvk_AllocateMemory(VkDevice _device,
+          result = panvk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+          goto err_destroy_mem;
+       }
++#else
++      result = panvk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++      goto err_destroy_mem;
++#endif
+    } else if (fd_info) {
+       assert(
+          fd_info->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT ||
+diff --git a/src/panfrost/vulkan/panvk_vX_physical_device.c b/src/panfrost/vulkan/panvk_vX_physical_device.c
+index 0857388..71716ff 100644
+--- a/src/panfrost/vulkan/panvk_vX_physical_device.c
++++ b/src/panfrost/vulkan/panvk_vX_physical_device.c
+@@ -199,7 +199,7 @@ panvk_per_arch(get_physical_device_extensions)(
+       .EXT_line_rasterization = true,
+       .EXT_load_store_op_none = true,
+       .EXT_map_memory_placed = true,
+-      .EXT_external_memory_host = true,
++      .EXT_external_memory_host = device->kbase_node_path[0] != '\0',
+       .EXT_nested_command_buffer = PAN_ARCH >= 10,
+       .EXT_memory_budget = true,
+       .EXT_non_seamless_cube_map = true,
+diff --git a/src/panfrost/vulkan/panvk_wsi.c b/src/panfrost/vulkan/panvk_wsi.c
+index c6026df..06fc5b7 100644
+--- a/src/panfrost/vulkan/panvk_wsi.c
++++ b/src/panfrost/vulkan/panvk_wsi.c
+@@ -81,7 +81,7 @@ panvk_wsi_init(struct panvk_physical_device *physical_device)
+ 
+    result = wsi_device_init(&physical_device->wsi_device,
+                             panvk_physical_device_to_handle(physical_device),
+-                            panvk_wsi_proc_addr, &instance->vk.alloc, -1,
++                            panvk_wsi_proc_addr, &instance->vk.alloc, uses_kbase ? -1 : physical_device->kmod.dev->fd,
+                             &instance->drirc.options,
+                             &(struct wsi_device_options){
+                                .sw_device = uses_kbase && !kbase_dmabuf,

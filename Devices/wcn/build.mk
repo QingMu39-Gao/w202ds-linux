@@ -18,3 +18,6 @@ $(eval $(call module,w202ds-bluetooth-rfcomm,$(WCN_BT_KERNEL_SOURCE)/net/bluetoo
 $(eval $(call module,w202ds-bluetooth-bnep,$(WCN_BT_KERNEL_SOURCE)/net/bluetooth/bnep,bnep.ko,w202ds-bluetooth-core))
 $(eval $(call module,w202ds-bluetooth-hidp,$(WCN_BT_KERNEL_SOURCE)/net/bluetooth/hidp,hidp.ko,w202ds-bluetooth-core))
 endif
+
+# Expose the GNSS rfkill interface, initially blocked; userspace owns requests.
+SERVER_MODULES += w202ds-wcn-gnss

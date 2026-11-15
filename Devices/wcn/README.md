@@ -35,7 +35,7 @@ wcn/
 
 2026-11-07：早先手机已在 2.4 GHz 下取得地址并上网，但后续重开热点又认证失败。本轮用独立客户端对照：独立 hostapd 能认证，NM 默认创建 P2P-device 时连续认证超时；移除 P2P-device 并重开热点后恢复。重启 wpa_supplicant 使 P2P-device 重建又复现，移除后再次恢复。关闭测试客户端自身省电后，无预设 IPv4 的 DHCP 广播分配也稳定通过；不能把此前漏收的 DHCPOFFER 当成 dnsmasq 故障。WPA2／CCMP、PMF 禁用，WPS 和 key_mgmt 保留 NM 默认。
 
-`source/sprd_wlan_combo/sc2355/init.c` 新增只读布尔模块参数 `disable_p2p`，默认关闭以保留原驱动行为。本板设置 `options sprd_wlan_combo disable_p2p=1`：只上报 managed／AP，取消 P2P 和并发组合以及 software_iftypes 旁路，由 cfg80211 限制为一个 STA 或 AP 接口。参数需在模块加载时设置。KDE rootfs 的标准 modprobe 配置由外层 `bsp/integration/boot-handoff/kde-rootfs/etc/modprobe.d/w202-wifi.conf` 管理；本机 factory_mac 私有值留在设备配置，不写入通用配置。
+`source/sprd_wlan_combo/sc2355/init.c` 新增只读布尔模块参数 `disable_p2p`，默认关闭以保留原驱动行为。本板设置 `options sprd_wlan_combo disable_p2p=1`：只上报 managed／AP，取消 P2P 和并发组合以及 software_iftypes 旁路，由 cfg80211 限制为一个 STA 或 AP 接口。参数需在模块加载时设置。是否选择此单接口模式由 发行版集成层 的板型 rootfs modprobe 配置决定；factory_mac 私有值留在设备配置，不写入通用配置。
 
 修复模块已本地构建并安装，真机参数为 `Y`。仅卸载 Wi-Fi 叶模块、保留 WCN 总线完成重载；再次重启默认 wpa_supplicant 后未创建 P2P-device，5 GHz 热点重新认证通过。正式热点仍由 NetworkManager shared／dnsmasq 管理，无新增守护程序。用户已确认手机验收通过；冷启动和新参数下 STA 实际联网尚未另测。
 
@@ -69,9 +69,9 @@ GUI 修改配置后仍应核对实际带宽。界面能力依据对应版本的 
 
 SC2355 的 H4 tty 驱动位于 `source/sprdbt_tty/`，本轮与来源项目逐文件比对一致，
 无需覆盖。新增 [userspace](userspace/README.md) 的厂商初始化工具、BlueZ 启动服务、
-本地协议测试及 `firmware/bt_configure_*.ini` 参数。来源是 GeekerCloud 在 CM2 的
+本地协议测试及 `firmware/bt_configure_*.ini` 参数。来源是 GeekerCloud 的
 蓝牙分支 `7a9eadb4ae503ded740e1b69faac45f1972ead24`，已适配我们的模块与服务路径。
-同时接入来源项目的 WCN 故障恢复服务、udev 规则及休眠钩子，服务和脚本路径已适配本仓库；流程与触发条件见 [userspace/README.md](userspace/README.md)。故障恢复会中断 Wi-Fi／热点与蓝牙连接，休眠恢复会重新初始化蓝牙；脚本模拟测试与安装检查通过，真实故障及休眠唤醒仍待实机验证。
+WCN 故障恢复工具及基础单元见 [userspace/README.md](userspace/README.md)。自动触发的 udev 规则与休眠钩子由 发行版集成层 `devices/w202ds/rootfs/optional/wcn/` 维护，不随板级组件安装。故障恢复会中断 Wi-Fi／热点与蓝牙连接，休眠恢复会重新初始化蓝牙；脚本模拟测试与安装检查通过，真实故障及休眠唤醒仍待实机验证。
 
 完整内核配置已加入蓝牙选项，独立片段为 `config/fragments/bluetooth.config`。
 重新构建内核时，将该片段合入实际配置；`CONFIG_BT=m`、BR/EDR、LE、HCIUART/H4
@@ -134,7 +134,7 @@ BLE Central／Peripheral、GATT、音频、文件协议和长期稳定性仍待�
 时保留已运行的 Wi-Fi／蓝牙。原厂签名容器没有可用的 Trusty 验证器时明确拒绝，
 当前已验证的是仓库内原有的 raw 固件。
 
-[userspace/gnss](userspace/gnss/README.md) 将本机 SIPC 二进制帧转为校验通过的 NMEA，
+[GNSS 用户态](userspace/gnss/README.md) 将本机 SIPC 二进制帧转为校验通过的 NMEA，
 不修改内核或新建 DT 通道。本地编译两模块后更新当前 KDE 的 BSP 与对应 initramfs，
 重启和电源循环通过；无需替换 kernel Image／DTB。独立模块的构建目标为
 `w202ds-wcn-gnss`，仍为显式选择，不加入默认 Server 模块集。

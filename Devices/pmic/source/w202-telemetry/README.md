@@ -21,6 +21,8 @@ TODO：完整冷启动与跨系统交接、断电期间 OCV／POCV 校正、低�
 
 USB 对象提供实际 ADC 电压、当前合同名义电压、源预算和 online / USB 类型，`scope=System`。TCPM 控制器与充电芯片的内部电源由各自模块标记 `scope=Device`；本模块通过标准电源属性读取合同，不包含其他硬件源码。
 
+`usb_type` 通过 DT 的 `usb-phy` 获取当前连接已完成的 BC1.2 分类，区分 SDP、CDP 和 DCP。硬件寄存器可能保留旧 DONE/type，遥测会丢弃这些历史位；缺 PHY、未完成或拔线时使用未知分类。重新检测和 DP/DM 所有权归 USB PHY，遥测只读结果。实时 PD/PPS 来源优先，普通 TCPM Type-C 回退不会覆盖已完成的 BC1.2 分类。寄存器定义来自 W205DS-ESIM Android 13 / Linux 5.4.276 的 `include/linux/power/sprd-bc1p2.h` 和 `drivers/usb/phy/sprd-bc1p2.c`。`PD_PPS` 表示源能力，实际 PPS 激活须结合 TCPM `online=2`；源预算也不是实测电流。
+
 研究项目根目录使用 `tools/bsp-build modules KDIR=/匹配内核输出 OUT=/临时目录 w202ds-pmic-telemetry`，输入为本目录源码、匹配内核与 AArch64 工具链，输出模块、build.json 和日志。`tests/usb-source.c` 验证源能力／断开边界；`tests/fgu-soc.c` 可由宿主 C 编译器运行，覆盖 RTC 编码、无效值、满充条件、观察中断和计时回绕。GCC 13 配合当前 GCC 14 的内核头构建时需显式传入 `w202ds-pmic-telemetry.vars=CONFIG_CC_HAS_MIN_FUNCTION_ALIGNMENT=`，不会修改内核配置。
 
 此前 PPS 功率曾经 UPower、KDE 验证约 9 W；最新双 C 连接仍为普通 5 V，PD RX=0，不把历史成功当作当前状态。接口矩阵见 KDE profile 的 POWER-INTERFACES.md。

@@ -12,6 +12,6 @@ make OUT=/path/to/output DESTDIR=/path/to/staging install
 make OUT=/path/to/native-tests check
 ```
 
-安装只暂存硬件适配，不启用服务或修改桌面会话。是否启动 Maliit、实体键盘拆装后是否启用虚拟键盘等策略，由 REIMUKS 的 `devices/w202ds/rootfs/profiles/desktop/kde/` 维护。
+安装只暂存硬件适配，不启用服务或修改桌面会话。是否启动 Maliit、实体键盘拆装后是否启用虚拟键盘等策略，由 发行版集成层 的 `devices/w202ds/rootfs/profiles/desktop/kde/` 维护。
 
 系统集成负责安装模板和桌面策略，应用使用此组件说明的 Linux 标准接口。

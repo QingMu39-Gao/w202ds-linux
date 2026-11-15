@@ -14,7 +14,7 @@ int w202_bq_leave_pps(struct w202_bq *bq)
 	union power_supply_propval online;
 	int ret;
 
-	if (bq->slave || !bq->pps_supply)
+	if (bq->slave || READ_ONCE(bq->otg_active) || READ_ONCE(bq->otg_saved_valid) || !bq->pps_supply)
 		return 0;
 	source = power_supply_get_by_name(bq->pps_supply);
 	if (!source)
@@ -63,7 +63,7 @@ int w202_bq_refresh_pps(struct w202_bq *bq)
 	union power_supply_propval online, voltage, amperage, value, minimum, maximum;
 	int ret, input_online, target, fallback;
 
-	if (bq->slave || !bq->pps_supply)
+	if (bq->slave || READ_ONCE(bq->otg_active) || READ_ONCE(bq->otg_saved_valid) || !bq->pps_supply)
 		return 0;
 	if (atomic_xchg(&bq->cable_detached, 0)) {
 		bq->pps_blocked = false;
@@ -94,8 +94,8 @@ int w202_bq_refresh_pps(struct w202_bq *bq)
 	 * resets its PPS latch. Manual stop always wins, including one arriving
 	 * during negotiation. Protection gates leave the user's auto request intact.
 	 */
-	if (bq->auto_pps && !auto_allowed(bq)) {
-		if (READ_ONCE(bq->stop_requested))
+	if (READ_ONCE(bq->fast_charge_disabled) || (bq->auto_pps && !auto_allowed(bq))) {
+		if (READ_ONCE(bq->stop_requested) || READ_ONCE(bq->fast_charge_disabled))
 			bq->pps_blocked = false;
 		bq->pps_retries = 0;
 		power_supply_put(source);
@@ -174,7 +174,7 @@ negotiated:
 	if (ret)
 		goto fail;
 	bq->pps_retries = 0;
-	if (bq->auto_pps && !auto_allowed(bq)) {
+	if (READ_ONCE(bq->fast_charge_disabled) || (bq->auto_pps && !auto_allowed(bq))) {
 		power_supply_put(source);
 		return retry_exit(bq);
 	}

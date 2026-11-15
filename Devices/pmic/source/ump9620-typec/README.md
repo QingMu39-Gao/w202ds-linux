@@ -1,90 +1,50 @@
 # UMP9620 Type-C / PD
 
-适配现有 UMP9620 PHY、FIFO、CC 与中断，协议状态机使用未修改的 Linux 6.18 TCPM。控制器属于 PMIC；充电芯片配置与策略归 charging，通过标准 power_supply 协作，不包含对方源码。
+适配 UMP9620 PHY、FIFO、CC 和中断，协议状态机使用 Linux TCPM。通过标准 regulator 管理 charging 提供的 VBUS，通过设备树 graph 连接 DWC3 的 USB role switch。
 
-## 最新双 C 对照（2026-11-07，北京时间）
+## 能力
 
-用户确认新线为双 C。18:07–18:12 UTC 将已有初始化候选临时加载 30 秒，显式 `pps=0 target_mv=5000 reset_pd=1`，结果仍 RX=0：Soft Reset 发送失败、两次有限 Hard Reset 后回普通 5 V。块复位与初始化执行并未恢复收发，不把复位成功记为 PD 成功，也不据此归因线材或充电器。原始记录归档在研究项目 `archive/linux/pd-cc-20261107-v2/`。
+- 数据角色：device / host；供电角色：sink / source，分别管理。
+- 默认双角色、优先受电。普通 OTG 接入通过 CC 检测；已连接的 PD 设备可请求 DR_SWAP / PR_SWAP，对端可拒绝请求。
+- source 仅声明 5 V / 500 mA，不声明高压输出或 VCONN。需要 VCONN 的线缆尚未支持。
+- sink 默认允许固定 9 V 回退和最高 9.8 V 的受限 PPS；实际输入受充电芯片、电池温度、源合同及故障保护约束。
+- 使用 USB PHY 对当前连接重新完成的 BC1.2 结果；默认 Rp 下 DCP/CDP 提供 1.5 A 预算，SDP、未知或未检测完成时保留 500 mA。明确 Rp 和 PD/PPS 合同走 TCPM 原有路径。
+- `activate=0` 仅保留只读寄存器快照。
 
-候选已撤下，正式 Type-C 模块 SHA256 `21920946d4ba6caf573343fa8e1aae6a3cddd7b5175b13c1432476ac5a991fb6`，PPS 默认允许 9.8 V 的原设置保留。最新为普通 5 V、Rp 3 A、无 PD 合同、RX=0；主路按原厂 2 A 输入上限工作。低输入电流期间电池约 4.35 V、主芯片 Full；FGU 旧 27.4% 的校正归 telemetry，不能通过取消充满终止来提高输入电流。充电器型号／输出档位尚待用户确认。当前源码中的显式初始化和可选 reset_pd 仍属未安装实验，默认 reset_pd=false。
+主线 TCPM 负责角色与协议顺序。本驱动在提供 VBUS 前检查 Type-C 比较器，拒绝向已带电的连接输出；停止输出在故障锁存后仍可执行。PR_SWAP 使用厂商 CC 强制值和切换标志，完成后释放 CC 强制及临时 detach 抑制。CC 设置中途失败会请求断开并锁住供电；真实拔线后也必须确认 VBUS 关闭，才允许重新启用端口。
 
-## 实物拔线与重接复测（2026-11-07 01:13–01:19，北京时间）
+## 构建与集成
 
-用户确认拔线后，VBUS ADC 0.159 V、STATUS=0（DETACHED_SNK）、detach IRQ=0x0002，重试 attempts=0；DBG1 仍为 0x0200，证实旧 DBG1[9] 门控不能判断未拔线。本次拔线前 fault=none，所以 rearms=0，尚不能据此认定故障锁存解锁已真机通过。
+在板级仓库根目录构建：
 
-用户确认插回后，attach IRQ=0x0001、STATUS=0x6002（ATTACHED_SNK、默认 Rp）、VBUS 4.712–4.738 V。TCPM 等待电源能力、进行两次有限 Hard Reset 后回到普通 5 V／500 mA，RX 仍为 0，没有 Source_Capabilities／Accept／PS_RDY，也未进入 ONLINE=2。auto=1、无温度或充电芯片故障锁存，从路保持 inhibit-charge。150 次两秒采样中 37 次离线、113 次在线；在线电池净功率最高约 0.343 W，主路能充电，但净电流随系统负载跨越状态死区。不能再用此前约 1.4 W 或约 9 W 代替本次结果。
-
-此前 PPS 成功时 STATUS=0x6082（Rp 3 A）、PHY_CFG2=0x0880；本次为 0x6002／0x0080。差异已保存，PHY_CFG2 未知位含义不明，未盲目写回。当前是否使用相同充电器、测试器和线尚待用户确认，尚不能区分源端／连接路径与本机收发故障。本轮全程只读，未重载模块、未修改策略或新增复位；原模块、原厂保护和回退保持，三模块磁盘哈希核对未变，无需重复构建。实物断开识别与普通充电恢复通过；PD/PPS 自动恢复失败，完整故障解锁和重启仍待测。
-
-原始日志、寄存器、UPower 和哈希证据见 PMIC modules/6.18.35-w202ds-m23-wifi/pd-physical-replug-20261107-v1/。原厂流程对照为此前版本开发记录，见下方。
-
-## 原厂流程对照（2026-11-06 16:29 UTC）
-
-用户测试器读到约 2.4 W、5 V／0.5 A；16:18 实机仍为普通 5 V，电池净充电约 1.4 W，PD 已 `hard-reset-budget-exhausted`。期间 TCPM 记录 CC 断开／重接，但上一版用未经验证的 DBG1[9] 阻止了拔线解锁。原厂源码只定义该位，没有用它判断拔线。本版改用 detach 中断加原厂 DETACHED_SNK 状态；同时增加独立的每 60 秒最多两次复位限制，探测器抖动或软件 CC 开合不会清空该上限。
-
-已读取本机原厂 B 槽 `sc27xx_pd.ko`（SHA256 `1518271aac7ee8bb8c509d1636f2fc7b0b0dd6fa77a4dfac28456985dd50951f`），与参考源码逐项核对：
-
-| 路径 | 原厂行为与本版改动 |
-| --- | --- |
-| 插拔判定 | `sc27xx_pd_check_vbus_cc_status` 读 STATUS[4:0]；本版不用未知调试位代替状态。 |
-| 协议清理 | 原厂每次连接变化调用 `sc27xx_pd_reset(pd, true)`；二进制 0x323c 传 true、0x3248 调用 0x1134。补正常拔线时清 FIFO、TX/RX ID 和旧合同标志，不再只清故障连接。 |
-| AON 时钟 | 原厂在检查 CC 时设置 syscon 0x350 bit 5，再使能 PMIC 时钟。本版使用原 DT 的 `sprd,syscon-aon-apb`，初始化／CC 事件时设置并回读；退出仅恢复该位。现场原值 0x8424 已含 bit 5，因此缺少此步骤不能直接证明是此次故障原因。 |
-| VBUS | 使用原厂 Type-C DBG1[8] 比较器；不再拿主充电器输入保持位充当 TCPM 的 VBUS。 |
-| 主线端口复位 | 声明标准 `self-powered`，本板可由电池供电；TCPM 初始化时允许短暂断开 CC 再接入。此为主线适配，不声称是原厂属性。 |
-
-16:28 最终模块已安装，SHA256 `21920946d4ba6caf573343fa8e1aae6a3cddd7b5175b13c1432476ac5a991fb6`。已看到初始化期间两次 CC 中断、断开后重接、普通 5 V／500 mA 回退；仍 RX=0，有限复位没有恢复 PD，不能标 PPS 修好。保持普通充电，实际用户长时间拔线与故障后解锁仍待验证。原厂公开驱动依赖私有 `sprd_tcpm` 和端口字段，不能直接把 Android .ko 装入当前 6.18 内核；移植的是其硬件流程，协议继续使用现有主线 TCPM。交付为 `pd-cc-rearm-20261106-v1/`，包含原厂反汇编证据及阶段补丁。
-
-```text
-ump9620-typec/
-├── Kbuild
-├── controller.h
-├── registers.h
-├── core.c             # 端口、CC、参数、生命周期与诊断
-├── hardware.c         # 校准、初始化与恢复
-├── protocol.c         # 收发、IRQ、源能力缓存与请求限值
-├── recovery.c         # 有限次数的协议复位、稳定合同与拔线解锁
-├── supply.c           # 内部TCPM控制电源的标准scope扩展
-├── request-limits.h   # 最终发送边界检查
-├── tests/              # 请求边界与生产恢复路径回归
-└── README.md
+```sh
+make -C Devices KDIR=/path/to/kernel-output OUT=/path/to/modules w202ds-pmic-typec
 ```
 
-## 构建输入与输出
+输入为本目录源码、匹配内核输出和 AArch64 工具链，输出 `w202_ump9620_typec.ko`。需要内核启用 TYPEC/TCPM、REGULATOR、USB_ROLE_SWITCH 和 DWC3_DUAL_ROLE，以及本板 DT 的 `vbus-supply` 和双向角色 graph。
 
-研究项目根目录运行 `tools/bsp-build modules KDIR=/匹配内核输出 OUT=/临时目录 w202ds-pmic-typec`。输入为本目录源码、内核配置／符号表和 AArch64 工具链，输出 `w202_ump9620_typec.ko`、日志和 build.json。依赖标准 typec / tcpm，不改内核或 UEFI；已加入 Server 模块构建集合；系统启动脚本在充电芯片 OVP 准备后加载。
+BC1.2 由内核 `drivers/usb/phy/phy-sprd-ums9620-ssphy.c` 提供，PD 与 FGU 节点的 `usb-phy` 均指向 DWC3 使用的 combo PHY。检测只在 sink 接入时运行，暂停数据路径，要求旧 DONE 清除后重新完成，随后恢复 DP/DM 与数据路径；错误、超时和拔线返回未知。PHY 内建时必须重编 Image，并同步 DTB 和配套模块。TCPM 的可选 PD profile 数组为 NULL 结尾留出空间；不修改协议状态机或 UEFI。
 
-## 功能与接口
+加载顺序为 PMIC telemetry、双路充电控制、Type-C。本驱动检查两路充电芯片的输入 OVP 是否覆盖所声明的 sink 上限，VBUS regulator 未就绪或 graph 中的 DWC3 switch 未注册时延迟探测。系统电源策略和服务启用由发行版管理。
 
-默认 `activate=1 pps=1 target_mv=9000 pps_max_mv=9800`，声明 sink / USB device，优先 PPS，由 charging 的标准电源客户端自动进入、逐步升压并续约。`activate=0` 保留只读快照诊断。加载前确认两颗充电芯片 VOLTAGE_MAX 覆盖所声明上限，否则不激活。默认 9.8 V 已实测，不自动尝试输入掉线的 11 V 或固定 12 V。
+## 接口和参数
 
-固定合同按源 PDO、3 A 板级预算和原厂 18 W 上限选择 9 V／5 V。显式设置 `pps=0 target_mv=5000` 可只用固定 5 V；实验参数仍接受 `target_mv=12000` 或 `pps_max_mv=11000`，不代表该板输入已通过，不属于默认策略。合同预算不是实测输入电流。默认 charging 的 max_input_mv=12000 只准备高压 OVP，不请求固定 12 V。
+标准接口位于 `/sys/class/typec/port*/`：`port_type`、`data_role`、`power_role`、`power_operation_mode`。板级工具见 [USB 用户态](../../../usb3/userspace/README.md)。`controller_state` 和 `register_snapshot` 提供只读诊断，不要求 debugfs。
 
-标准 TCPM 电源 `online=2` 激活 PPS，`voltage_now`（µV）调压，`online=1` 回固定 9 V；源端 PPS 上限为 11 V，不能请求 12 V PPS。TCPM USB_TYPE=PD_PPS 仅表示源支持，实际合同必须核对 ONLINE=2 和 APDO Request / Accept / PS_RDY。
+默认参数为 `activate=1 pps=1 target_mv=9000 pps_max_mv=9800`。固定档也可选择 `pps=0 target_mv=5000`；12 V 固定档及 11 V PPS 仅是显式实验参数，不进入默认策略。
 
-匹配 TCPM 的 PPS 选择未取 sink APDO 交集，本模块缓存 Source_Capabilities，在写 FIFO 前验证 RDO 对象序号、PDO 类型、电压与电流，同时检查源能力和板级上限；超界不发送。宿主测试涵盖 56942 个 PPS 电压／电流边界组合及固定档、无效序号、缩小源能力与未启用 PPS 情形。set_current_limit 同样接受范围内的中间电压。
+Type-C 的 CC IRQ 不覆盖所有延后的 VBUS 比较器变化。独立 worker 每 100 ms 核对实际比较器，只在状态改变时通知 TCPM；卸载先停止 worker。不能将 regulator 请求成功当作电压已经就绪，也不能省略源供电后的 VBUS 通知。
 
-PMIC telemetry 的 w202-usb-c/voltage_max 为 TCPM 当前合同名义值，voltage_now 为 ADC；TCPM 自身 voltage_max 在 PPS 中表示源 APDO 上限，不能当作当前输入，否则会误判过压停充。
+TCPM 控制电源的 `online=2` 表示 PPS 已激活，`online=1` 表示普通受电合同。`usb_type=PD_PPS` 是能力标签，不能单独证明当前 PPS。`w202-usb-c` 提供系统输入和实际 ADC 电压，内部 TCPM 电源标记为 `scope=Device`。
 
-`supply.c` 用现有 `power_supply_register_extension()` 仅补充 TCPM 电源的 `scope=Device`，所有协议属性保留；模块退出时先注销扩展、释放电源引用，再注销 TCPM。系统实际输入由 `w202-usb-c` 的 `scope=System` 提供，避免桌面重复计入内部控制电源。修复 UPower 1.90.9 将 PPS online=2 当布尔值、持续重置功率等待期导致 0 W 的问题，没有修改内核 TCPM 或 UPower。
+## 恢复与验证
 
-## 实验结果与限制
+保留有限 Hard Reset、稳定合同计时和真实 CC 拔线解锁；sink/source 的已脱离状态均可清理旧合同。独立复位速率上限不会因探测器抖动被清空。协议故障同时请求关闭本机 VBUS；regulator 故障通知 TCPM 重新初始化。
 
-5 V 固定合同、9 V 固定充电，以及 5–9 V PPS 调压、续约和固定档回退已短测通过。最终 9.8 V PPS 连续两分钟，电池净电流 +2.101–2.174 A、净功率平均 8.99 W、29.9–30.1°C；停充、固定 9 V 回退和重新激活通过，PD 无错误。3 A 仅协议预算；实际充电受原厂输入／电池策略限制。10.2 V 仅短时有效，严格复测约 10.1 V 已见一路 PG 掉线；小步约 10.4 V 起实际输入掉线，11 V 只有协议成功，不能视为可用档位。退出 PPS 后固定 9 V 可恢复，切断位置未定位。该阶段交付见本硬件 `modules/6.18.35-w202ds-m23-wifi/pd-pps-20261106-v1/`。后续 `kde-power-20261106-v1/` 增加标准 scope、保持 PPS 验证通过，当时模块文件已安装、启动配置未改；本轮已补默认 PPS 参数与外层自动充电启动集成，最终验证见上级 README。
+宿主测试直接执行生产角色和恢复代码，覆盖 CC 方向、独立供电/数据角色、已带电 VBUS、失败停止、PR_SWAP 清理、I/O 错误及复位预算。请求边界测试另验证 PD/PPS 电压、电流和源能力限制。
 
-首次 PD 移植漏掉原厂完整中断掩码，IRQ/RX 为 0，超时后重复 Hard Reset 导致测试器闪烁。恢复 0x85ff 掩码及故障锁存后收发正常。初版 PPS 续约把读取的旧电压写回，曾覆盖并发调压，现改为重申电流预算，保留 TCPM 锁内的最新电压。
-
-2026-11-06 15:45 实机再次停充时，旧控制器锁存在 `hard-reset-blocked`，且主充电器报告 Full；不能归因于系统休眠。15:46 重载仍未恢复 PD，首次 Soft Reset 即发送失败。新版允许最多两次连续 PD Hard Reset；只有合同连续维持 60 秒或实际 CC 断开才恢复预算，PPS 续约不重置稳定计时。收到源 Hard Reset 同样走有限恢复并通知 TCPM；发送超时后的 Hard Reset 可清理旧的未完成消息。连续失败／I/O 错误仍锁住 PD 引擎，保留 Rd 和 Type-C IRQ；真实拔线可重置本地协议、解除锁存并通知 TCPM，不再要求重载模块。只修改协议，不复位整机、不主动提供 VBUS。
-
-补齐 TCPM `get_current_limit`：默认 Rp 回退已有的 500 mA USB 预算；此前缺少此接口时返回 0 mA，导致无 PD 合同时整个充电策略停充。15:56 已实测回到 5 V、500 mA 输入预算并保持电池净充电约 +0.32 A／1.4 W。此时 RX=0，驱动未收到源端消息，有限 Hard Reset 未恢复快充；不能把 `fault=none` 或两次重试本身称为 PD 成功。物理重插及新一轮 PPS 恢复仍待实物验证。15:58 主充电器随后报告 Full、净电流约 0，不再强行重复开启充电。
-
-`controller_state` 增加累计 resets、当前 attempts、faults、rearms 和 last_fault，保留故障证据；errors 包含失败发送。诊断不读 FIFO 或清中断。`tests/recovery.c` 直接执行生产 recovery.c，验证重试上限、禁止连续复位、60 秒稳定预算、PPS 续约、时钟回绕和 I/O 失败保持锁存。完整规范恢复仍未完成。
-
-历史固定 12 V 协商成功但输入 ADC 0.159 V、两路 PG=0，未开启电池充电；外表 12 V/0.01 A。重载默认 5 V 未使源降压，物理重接后才恢复，原因仍未定位。不绕过板级输入保护，也不能把原厂 PPS 11 V 声明当作整板固定 12 V 已验证。降 OVP 前须验证真实输入已下降。
-
-## TODO / Experimental
-
-物理拔插自动重建的实物验收、完整重启、长时间充满、睡眠恢复、所有故障分支及用户验收；完整规范恢复、源角色与 VCONN。11 V PPS 输入掉线待查；固定 12 V 定位按用户要求暂缓。新增输入丢失退出 PPS 的分支尚未单独触发验证。
+已验证普通 OTG 接入可自动输出约 5 V，USB hub 与 RTL8153 网卡完成枚举并绑定驱动。该次 USB 链路为 480 Mbit/s；不等于千兆吞吐验证。PD/PPS 收发、快充重连、带载充电分离、两种方向与连续切换仍需分别验收，不承诺所有 PD 线缆、USB3 或 DP Alt Mode 可用。
 
 ## 来源
 
-寄存器／eFuse 校准来自原厂 [sc27xx_pd.c](https://github.com/Yeamika/w202ds-linux/blob/e517c65be6a13e7ae8bce64a5813622c9e56fdb0/Devices/usb3/source/vendor-reference/drivers/usb/typec/tcpm/sc27xx_pd.c)，CC 参考原厂 [sc27xx_typec.c](https://github.com/Yeamika/w202ds-linux/blob/e517c65be6a13e7ae8bce64a5813622c9e56fdb0/Devices/usb3/source/vendor-reference/drivers/usb/typec/sc27xx_typec.c)，保留原作者许可证；参考副本已从当前源码树移除。原厂限制核对 B 槽 DT、sqc_bq2560x.ko、sprd_battery_info.ko 和匹配电池解析源码。标准接口依据本项目 kernel 的 tcpm.c、pd.h、tcpm.h 与 power_supply_class 文档。
+W205DS-ESIM Android 13 / Linux 5.4.276 的 `drivers/usb/typec/sc27xx_typec.c`、`drivers/usb/typec/tcpm/sc27xx_pd.c`，以及 Linux 标准 TCPM、regulator 和 USB role switch 接口。厂商代码提供寄存器序列参考，不直接加载 Android 模块。

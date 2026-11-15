@@ -1,0 +1,58 @@
+#!/bin/sh
+# Request roles through TCPM, which coordinates CC, VBUS and the DWC3 graph.
+set -eu
+sysfs=${W202_SYSFS_ROOT:-/sys}
+mode=${1:-status}
+attribute=
+value=
+case "$mode" in
+    status) test "$#" -le 1 ;;
+    auto|host|device)
+        test "$#" -eq 1
+        attribute=port_type
+        case "$mode" in auto) value=dual ;; host) value=source ;; device) value=sink ;; esac ;;
+    data)
+        test "$#" -eq 2
+        attribute=data_role
+        case "$2" in host|device) value=$2 ;; *) exit 2 ;; esac ;;
+    power)
+        test "$#" -eq 2
+        attribute=power_role
+        case "$2" in source|sink) value=$2 ;; *) exit 2 ;; esac ;;
+    *) echo 'Usage: w202-usb-role [status|auto|host|device|data host|data device|power source|power sink]' >&2; exit 2 ;;
+esac
+if test -n "$attribute"; then
+    modprobe w202_ump9620_power
+    modprobe w202_bq_control
+    modprobe w202_ump9620_typec
+fi
+port=
+for candidate in "$sysfs"/class/typec/port*; do
+    test -f "$candidate/port_type" || continue
+    if test -n "$port"; then
+        echo 'W202DS USB: ambiguous Type-C port selection' >&2
+        exit 1
+    fi
+    port=$candidate
+done
+if test -z "$port"; then
+    echo 'W202DS USB: Type-C controller or dual-role kernel is unavailable' >&2
+    exit 1
+fi
+if test -n "$attribute"; then
+    # Never write the DWC3 role directly: that would bypass power negotiation.
+    printf '%s\n' "$value" > "$port/$attribute"
+    actual=$(cat "$port/$attribute")
+    case "$actual" in
+        "$value"|*"[$value]"*) ;;
+        *) echo "W202DS USB: $attribute did not accept $value" >&2; exit 1 ;;
+    esac
+fi
+for attr in port_type data_role power_role power_operation_mode; do
+    test -r "$port/$attr" || continue
+    printf '%s.%s=%s\n' "${port##*/}" "$attr" "$(cat "$port/$attr")"
+done
+for role in "$sysfs"/class/usb_role/*/role; do
+    test -r "$role" || continue
+    printf 'usb_role.%s=%s\n' "$(basename "$(dirname "$role")")" "$(cat "$role")"
+done

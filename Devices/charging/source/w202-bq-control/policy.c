@@ -39,7 +39,7 @@ int w202_bq_charge_locked(struct w202_bq *bq)
 	int charge_current;
 	int health = POWER_SUPPLY_HEALTH_UNKNOWN;
 
-	if (bq->slave || bq->suspended)
+	if (bq->slave || bq->suspended || bq->otg_active || bq->otg_saved_valid)
 		return w202_bq_stop_locked(bq);
 	if (bq->device_id != 0x14 || bq->vendor_id != 5)
 		goto inhibit;

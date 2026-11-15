@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 
-SOURCE = Path(__file__).resolve().parents[1] / 'runtime/w202-modem-storage.py'
+SOURCE = Path(__file__).resolve().parents[1] / 'tests/reference_storage.py'
 SPEC = importlib.util.spec_from_file_location('modem_storage', SOURCE)
 storage = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(storage)

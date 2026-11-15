@@ -6,7 +6,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 state=${W202_MODEM_STATE:-/var/lib/w202ds/modem-runtime}
 root="$state/android"
-modules="/usr/lib/w202ds/modem/$(uname -r)"
+modules="/usr/lib/modules/$(uname -r)/updates/w202ds"
 broker=/usr/libexec/w202-android-runtime
 properties=/usr/share/w202ds/modem/runtime-properties.bin
 storage=/usr/libexec/w202-modem-storage
@@ -14,7 +14,6 @@ ldpath=/apex/com.android.runtime/lib64/bionic:/system/lib64:/vendor/lib64
 fail() { echo "w202-modem-runtime: $*" >&2; exit 1; }
 check_state() {
     test "$(id -u)" = 0 || fail 'Root is required.'
-    test "$(uname -r)" = 6.18.35-w202ds-m23-wifi || fail 'Unmatched kernel release.'
     case "$state" in /var/lib/w202ds/*) ;; *) fail 'Unexpected private runtime path.' ;; esac
     test "$(readlink -f "$state")" = "$state" || fail 'Private runtime must have a canonical path.'
     test -d "$root" && test ! -L "$root" || fail 'Missing private Android root.'
@@ -24,6 +23,13 @@ check_state() {
         test $(( 0$permissions & 0022 )) = 0 || fail 'Private runtime is writable by others.'
     done
     id w202modem >/dev/null
+}
+cp_run_state() {
+    case "$1" in modem|pmsys|chsys) ;; *) fail 'Unknown processor.' ;; esac
+    path="/sys/class/ext_modem/$1/run_state"
+    test -r "$path" || fail "Missing processor status: $1."
+    value=$(cat "$path")
+    case "$value" in 0|1|255) printf '%s\n' "$value" ;; *) fail "Invalid processor status: $1." ;; esac
 }
 at() { w202-modem-at /dev/stty_nr0 "$@"; }
 # Opt in only with matching modules and this device's signed AVB inputs provisioned.
@@ -35,7 +41,7 @@ prepare_boot() {
         *) fail 'W202_MODEM_BOOT_PREPARE must be 0 or 1.' ;;
     esac
     for processor in modem pmsys chsys; do
-        run_state=$(awk '/^run_state:/ {gsub(/,/,"",$2); print $2; exit}' "/sys/kernel/debug/modem/$processor")
+        run_state=$(cp_run_state "$processor")
         case "$run_state" in 0|255) ;; *) fail "Cannot prepare a running $processor." ;; esac
     done
     if test ! -d /sys/module/w202_avb_seed; then
@@ -138,7 +144,12 @@ check_state
 case "$operation" in
     foundation)
         test -d "$modules" && test -f "$modules/SHA256SUMS"
+        test "$(cat "$modules/kernel-release")" = "$(uname -r)" || fail 'Unmatched module bundle.'
         (cd "$modules"; sha256sum -c --quiet SHA256SUMS)
+        for file in "$modules"/*.ko; do
+            version=$(modinfo -F vermagic "$file")
+            test "${version%% *}" = "$(uname -r)" || fail "Unmatched module: ${file##*/}."
+        done
         load_module sprd_power_manager sprd_power_manager.ko
         load_module unisoc_mailbox unisoc-mailbox.ko
         load_module sipc_core sipc-core.ko
@@ -146,11 +157,15 @@ case "$operation" in
         for core in 6 9 5 7; do
             test "$(basename "$(readlink "/sys/bus/platform/devices/sipc-virt:core@$core/driver")")" = sprd-sipc || fail "SIPC core $core is not bound."
         done
+        load_module sprd_systimer sprd_systimer.ko
+        load_module sprd_time_sync sprd_time_sync.ko
+        load_module sprd_time_sync_cp sprd_time_sync_cp.ko
         load_module sprd_modem_loader sprd_modem_loader.ko
         load_module spipe spipe.ko
+        # Register IPC before creating Trusty's auto-populated child devices.
+        load_module trusty_ipc trusty-ipc.ko
         load_module trusty trusty.ko
         load_module trusty_irq trusty-irq.ko
-        load_module trusty_ipc trusty-ipc.ko
         load_module trusty_virtio trusty-virtio.ko
         load_module sprd_shm sprd_shm.ko
         load_module sipa_core sipa-core.ko
@@ -161,8 +176,19 @@ case "$operation" in
         # No unload/unbind path: these modules remain until the next OS reboot.
         ;;
     private-root)
+        # Private input archives have no portable service UID/GID. Resolve the
+        # current distro identity before dropping privileges into the runtime.
+        # Keep code root-owned and non-writable by the service account.
+        chgrp w202modem "$state" "$root"
+        chmod 0750 "$state" "$root"
         bind_firmware
         "$storage" prepare --state "$state"
+        for directory in "$root/dev/block" "$root/dev/block/by-name"; do
+            test -d "$directory" && test ! -L "$directory" || fail 'Invalid private device directory.'
+            test "$(stat -c %u "$directory")" = 0 || fail 'Private device directory must be root-owned.'
+            chgrp w202modem "$directory"
+            chmod 0750 "$directory"
+        done
         check_code
         for forbidden in dev/mem dev/kmem dev/mmcblk0 sys/power/wake_lock; do
             test ! -e "$root/$forbidden" || fail "Unexpected $forbidden."
@@ -217,7 +243,7 @@ case "$operation" in
         if at AT > /run/w202-modem/initial-at-response; then
             echo 'Adopting already responsive CP; original firmware loader will not run.'
         else
-            run_state=$(awk '/^run_state:/ {gsub(/,/,"",$2); print $2; exit}' /sys/kernel/debug/modem/modem)
+            run_state=$(cp_run_state modem)
             case "$run_state" in 0|255) ;; *) fail 'CP already marked running but not responding; automatic firmware reload refused.' ;; esac
             prepare_boot
             trap 'systemctl stop w202-modem-loader.service' EXIT
@@ -228,7 +254,7 @@ case "$operation" in
                 if at AT > /run/w202-modem/initial-at-response; then
                     processors_ready=1
                     for processor in modem pmsys chsys; do
-                        run_state=$(awk '/^run_state:/ {gsub(/,/,"",$2); print $2; exit}' "/sys/kernel/debug/modem/$processor")
+                        run_state=$(cp_run_state "$processor")
                         if test "$run_state" != 1; then processors_ready=0; break; fi
                     done
                     if test "$processors_ready" = 1; then alive=1; break; fi

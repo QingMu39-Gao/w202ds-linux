@@ -141,7 +141,7 @@ extern int sprd_dbg_level;
 #define wl_warn(fmt, args...) \
 	do { \
 		if (sprd_dbg_level >= L_WARN) \
-			pr_err(fmt, ##args); \
+			pr_warn(fmt, ##args); \
 	} while (0)
 
 #define wl_info(fmt, args...) \

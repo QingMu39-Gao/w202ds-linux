@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "base": "project",
+  "rootfs": "output/userspace/vpu/rootfs",
+  "required": ["usr/lib/aarch64-linux-gnu/dri/v4l2_request_drv_video.so"]
+}

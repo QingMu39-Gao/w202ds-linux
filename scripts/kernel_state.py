@@ -127,7 +127,7 @@ def describe_output(path):
     elif path.name == 'build' and (path.parent / 'manifest.json').is_file():
         return describe_output(path.parent)
     else:
-        raise ValueError(f'No verified kernel output in {path}; build/import a kernel into a new directory')
+        raise ValueError(f'No verified kernel output in {path}; build/import a kernel into a clean output directory')
     return {'root': root, 'kdir': kdir, 'metadata': metadata, 'kind': kind}
 
 

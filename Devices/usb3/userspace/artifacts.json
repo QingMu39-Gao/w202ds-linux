@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "rootfs": "output/userspace/usb3/rootfs",
+  "required": [
+    "usr/libexec/w202-usb-control",
+    "usr/libexec/w202-usb-gadget",
+    "usr/libexec/w202-usb-role"
+  ],
+  "base": "project"
+}

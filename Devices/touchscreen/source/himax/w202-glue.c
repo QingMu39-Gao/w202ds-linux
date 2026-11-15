@@ -3,6 +3,10 @@
 #include <linux/of.h>
 #include <linux/firmware.h>
 #include <linux/string.h>
+/* Board mounting compensation; userspace owns the output transform. */
+unsigned int w202_touch_mount_rotation = 270;
+module_param_named(mount_rotation, w202_touch_mount_rotation, uint, 0444);
+MODULE_PARM_DESC(mount_rotation, "Touch mounting compensation (clockwise 0/90/180/270 degrees; default 270)");
 char himax_firmware_name[50] = "Himax_firmware_guoxian.bin";
 char himax_mp_firmware_name[50] = "Himax_mp_firmware_guoxian.bin";
 char hx_criteria_csv_name[30];
@@ -13,6 +17,9 @@ static int __init w202_himax_init(void)
 {
     struct device_node *panel;
     bool enabled;
+
+    if (w202_touch_mount_rotation > 270 || w202_touch_mount_rotation % 90)
+        return -EINVAL;
 
     /* Native Linux identifies the controller through DT, not Android's
      * optional lcd_name boot argument. SPI still performs the chip probe. */

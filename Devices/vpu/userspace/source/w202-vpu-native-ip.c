@@ -134,7 +134,7 @@ int main(int argc, char **argv)
  check(decoder >= 0, "exclusive decoder");
  check(!ioctl(decoder, _IO('m', 5), NULL) && !ioctl(decoder, _IO('m', 3), NULL) &&
        !ioctl(decoder, _IO('m', 8), NULL), "acquire/enable/reset");
- struct native_buffer input = allocate(max_nal + W202_H264_BSM_PADDING, NULL, 0);
+ struct native_buffer input = allocate(max_nal + W202_VPU_BSM_PADDING, NULL, 0);
  struct native_buffer frames[NATIVE_FRAMES];
  for (unsigned int i = 0; i < fixture->count; i++) frames[i] = allocate(pixels + aux, NULL, 0);
  registers = mmap(NULL, 0x14000, PROT_READ | PROT_WRITE, MAP_SHARED, decoder, 0);
@@ -176,7 +176,7 @@ int main(int argc, char **argv)
    }
 #endif
   }
-  struct w202_h264_config config = {0};
+  struct w202_vpu_config config = {0};
   int result = build_fixture(&job, &config);
   fprintf(stderr, "Native " NATIVE_NAME " setup: frame=%u type=%u frame_num=%u poc=%d qp=%d bits=%u bytes=%zu rbsp=%zu registers=%u build=%d profile=%u cabac=%u init=%u flat_matrix=%u\n",
           i, f->slice.slice_type, f->decode.frame_num, f->decode.top_field_order_cnt,
@@ -190,7 +190,7 @@ int main(int argc, char **argv)
   poll(0x8018, 0x08000000, 0);
   reg_write(0x1080, config.stream_address >> 4); reg_write(0x1084, config.stream_address >> 4);
   reg_write(0x8008, 6); reg_write(0x8004, 0x80000000);
-  reg_write(0x8000, (config.stream_bytes + W202_H264_BSM_PADDING) | 0x80000000);
+  reg_write(0x8000, (config.stream_bytes + W202_VPU_BSM_PADDING) | 0x80000000);
   for (unsigned int bits = config.header_bits; bits;) {
    unsigned int n = bits > 32 ? 32 : bits;
    poll(0x8020, 1, 1); reg_write(0x8008, n << 24); reg_write(0x8008, (n << 24) | 1);

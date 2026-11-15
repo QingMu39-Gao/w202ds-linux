@@ -23,4 +23,4 @@ nr_deltanv、fixnv、runtimenv 仍是独立私有输入，不作为公共固件�
 来源、SHA256、格式及缺项见 [manifest.json](manifest.json)。
 原始分区备份和解包基线继续独立保全。
 
-2026-11-07 Linux 运行目录支持：通过 `/etc/default/w202-modem-runtime` 的 `W202_MODEM_FIRMWARE_DIR` 指定本机已校验的五个运行输入目录，真机为 `/usr/lib/firmware/w202ds/modem/`。该目录只读绑定到原厂程序的私有根；`*_a` 仅为兼容别名，Linux 无需再复制一套 B 固件。此处保留的 A/B 原厂备份仍独立不动。运行目录包含的 CH、deltanv 依赖按本机私有输入契约准备，不代表将其公开发布；NV 工作镜像单独放在状态目录的 `nv/`，详见 [运行集成](../userspace/integration/README.md)。
+2026-11-07 Linux 运行目录支持：通过 `/etc/default/w202-modem-runtime` 的 `W202_MODEM_FIRMWARE_DIR` 指定本机已校验的五个运行输入目录，真机为 `/usr/lib/firmware/w202ds/modem/`。该目录只读绑定到原厂程序的私有根；`*_a` 仅为兼容别名，Linux 无需再复制一套 B 固件。此处保留的 A/B 原厂备份仍独立不动。运行目录包含的 CH、deltanv 依赖按本机私有输入契约准备，不代表将其公开发布；NV 工作镜像单独放在状态目录的 `nv/`，详见 [运行契约](../userspace/RUNTIME.md)。

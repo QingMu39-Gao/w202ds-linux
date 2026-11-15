@@ -5,22 +5,8 @@
 #include <linux/types.h>
 #include <linux/v4l2-controls.h>
 
-/* Internal, pointer-free hardware result. Not a userspace ABI. Building this
- * result does not access hardware and can be checked against observed jobs.
- * The caller owns every DMA mapping until the core is stopped/reset.
- */
-#define W202_H264_MAX_REGS 1024
-#define W202_H264_BSM_PADDING 1024
-struct w202_h264_reg {
-	__u32 offset;
-	__u32 value;
-};
-struct w202_h264_config {
-	__u32 width, height;
-	__u32 stream_address, stream_bytes, header_bits;
-	unsigned int count;
-	struct w202_h264_reg regs[W202_H264_MAX_REGS];
-};
+#include "w202_vpu_hw.h"
+
 #define W202_H264_MAX_REFERENCES 16
 struct w202_h264_reference {
 	__u64 address, auxiliary_address;
@@ -59,17 +45,17 @@ struct w202_h264_job {
 /* First validated subset: progressive Baseline, one CAVLC IDR slice, NV12.
  * Unsupported syntax is rejected before any DMA or register programming. */
 int w202_h264_build_idr(const struct w202_h264_job *job,
-		       struct w202_h264_config *config);
+		       struct w202_vpu_config *config);
 /* Progressive 8-bit 4:2:0 Baseline/Main/High IDR/P, one slice and up to sixteen
  * short-term references. High supports 8x8 transforms and resolved scaling.
  * Shared by the experimental V4L2 frontend and the native diagnostic client.
  */
 int w202_h264_build_ip(const struct w202_h264_job *job,
-		      struct w202_h264_config *config);
+		      struct w202_vpu_config *config);
 /* Also accepts progressive Main/High reference/non-reference B pictures,
  * spatial/temporal direct and explicit/implicit weights. Up to sixteen entries
  * per list; hardware qualification and remaining limits are in v4l2.md. */
 int w202_h264_build_ipb(const struct w202_h264_job *job,
-		       struct w202_h264_config *config);
+		       struct w202_vpu_config *config);
 
 #endif

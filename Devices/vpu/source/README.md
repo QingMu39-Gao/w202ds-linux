@@ -2,6 +2,8 @@
 
 本目录直接维护 W202DS 当前使用的驱动和公共头文件。
 
+只读任务占用统计接口及口径见 [utilization.md](utilization.md)。
+
 | 源码 | 职责 | 输出模块 |
 | --- | --- | --- |
 | `w202_vpu_power.c` | VPU 电源域管理 | `w202_vpu_power.ko` |

@@ -1,2 +1,2 @@
 obj-m += w202_bq_control.o
-w202_bq_control-y := core.o registers.o policy.o power-supply.o sysfs.o pps.o
+w202_bq_control-y := core.o registers.o policy.o power-supply.o sysfs.o pps.o otg.o otg-hardware.o

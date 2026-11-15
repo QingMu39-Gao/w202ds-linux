@@ -10,11 +10,16 @@
  */
 void w202_pd_latch_fault(struct w202_typec *pd, const char *reason)
 {
-	int ret, mask_ret;
+	int ret, mask_ret, vbus_ret;
 
 	lockdep_assert_held(&pd->lock);
-	if (pd->faulted)
+	vbus_ret = w202_typec_stop_source(pd);
+	if (pd->faulted) {
+		if (vbus_ret)
+			dev_err_ratelimited(pd->dev, "Faulted VBUS stop not confirmed: %d\n",
+					    vbus_ret);
 		return;
+	}
 	pd->faulted = true;
 	pd->fault_reason = reason;
 	pd->last_fault_reason = reason;
@@ -23,9 +28,9 @@ void w202_pd_latch_fault(struct w202_typec *pd, const char *reason)
 	ret = regmap_update_bits(pd->regmap, pd->base + SC27XX_PD_CFG0,
 				SC27XX_PD_CTL_EN, 0);
 	mask_ret = regmap_write(pd->regmap, pd->base + SC27XX_INT_EN, 0);
-	dev_warn(pd->dev, "PD stopped: %s; irq=%llu rx=%llu tx=%llu complete=%llu flags=%04x disable=%d/%d; waiting for CC detach\n",
+	dev_warn(pd->dev, "PD stopped: %s; irq=%llu rx=%llu tx=%llu complete=%llu flags=%04x disable=%d/%d vbus_off=%d; waiting for CC detach\n",
 		 reason, pd->irq_count, pd->rx_count, pd->tx_count,
-		 pd->tx_complete_count, pd->last_irq_flags, ret, mask_ret);
+		 pd->tx_complete_count, pd->last_irq_flags, ret, mask_ret, vbus_ret);
 }
 
 int w202_pd_flush(struct w202_typec *pd, bool reset_ids)

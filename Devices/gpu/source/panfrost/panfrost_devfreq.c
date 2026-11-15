@@ -39,7 +39,10 @@ static int panfrost_devfreq_target(struct device *dev, unsigned long *freq,
 		return PTR_ERR(opp);
 	dev_pm_opp_put(opp);
 
-	err = dev_pm_opp_set_rate(dev, *freq);
+	if (panfrost_is_ums9620(pfdev))
+		err = panfrost_ums9620_set_rate(pfdev, *freq);
+	else
+		err = dev_pm_opp_set_rate(dev, *freq);
 	if (!err)
 		pfdev->pfdevfreq.current_frequency = *freq;
 
@@ -143,8 +146,8 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
 	}
 
 	if (panfrost_is_ums9620(pfdev)) {
-  /* Provider holds inherited supply and offers only the rates this
-   * chip runs at that supply; no reference-clock DVFS. */
+  /* The provider sequences PMIC/voltage-slot and core-clock changes;
+   * regulator transfers must stay outside CCF's prepare lock. */
   ret = devm_pm_opp_set_clkname(dev, "gpu-core");
   if (ret)
    return ret;
@@ -204,7 +207,10 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
 	 * Set the recommend OPP this will enable and configure the regulator
 	 * if any and will avoid a switch off by regulator_late_cleanup()
 	 */
-	ret = dev_pm_opp_set_opp(dev, opp);
+	if (panfrost_is_ums9620(pfdev))
+		ret = panfrost_ums9620_set_rate(pfdev, cur_freq);
+	else
+		ret = dev_pm_opp_set_opp(dev, opp);
 	dev_pm_opp_put(opp);
 	if (ret) {
 		DRM_DEV_ERROR(dev, "Couldn't set recommended OPP\n");

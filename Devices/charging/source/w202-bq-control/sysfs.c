@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Read-only diagnostics and the legacy stop_charge compatibility ABI. */
+/* Diagnostics, PPS permission and the legacy stop_charge compatibility ABI. */
 #include "charger.h"
 
 static ssize_t stop_charge_store(struct device *dev, struct device_attribute *attr,
@@ -81,15 +81,46 @@ static ssize_t charging_policy_show(struct device *dev, struct device_attribute 
 	ssize_t ret;
 
 	mutex_lock(&bq->lock);
-	ret = sysfs_emit(buf, "auto=%d suspended=%d temp_decic=%d voltage_uv=%d thermal_blocked=%d fault=%02x history=%02x latched=%d health=%d input_limit_ua=%d requested_charge_ua=%d auto_pps=%d pps_blocked=%d pps_exit_pending=%d\n",
+	ret = sysfs_emit(buf, "auto=%d suspended=%d temp_decic=%d voltage_uv=%d thermal_blocked=%d fault=%02x history=%02x latched=%d health=%d input_limit_ua=%d requested_charge_ua=%d auto_pps=%d pps_blocked=%d pps_exit_pending=%d otg_active=%d otg_restore_pending=%d\n",
 		!bq->stop_requested, bq->suspended, bq->temperature, bq->voltage,
 		bq->thermal_blocked, bq->fault, bq->fault_history, bq->fault_latched, bq->health,
 		bq->input_limit, bq->charge_current_ua, bq->auto_pps, READ_ONCE(bq->pps_blocked),
-		READ_ONCE(bq->pps_exit_pending));
+		READ_ONCE(bq->pps_exit_pending), bq->otg_active, bq->otg_saved_valid);
 	mutex_unlock(&bq->lock);
 	return ret;
 }
 static DEVICE_ATTR_RO(charging_policy);
+
+static ssize_t fast_charge_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct w202_bq *bq = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", !READ_ONCE(bq->fast_charge_disabled));
+}
+
+static ssize_t fast_charge_store(struct device *dev, struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	struct w202_bq *bq = dev_get_drvdata(dev);
+	bool enabled;
+	int ret = kstrtobool(buf, &enabled);
+
+	if (ret)
+		return ret;
+	if (bq->slave)
+		return -EOPNOTSUPP;
+	mutex_lock(&bq->lock);
+	if (bq->shutting_down) {
+		mutex_unlock(&bq->lock);
+		return -ESHUTDOWN;
+	}
+	WRITE_ONCE(bq->fast_charge_disabled, !enabled);
+	if (!bq->suspended)
+		mod_delayed_work(system_wq, &bq->stop_work, 0);
+	mutex_unlock(&bq->lock);
+	return count;
+}
+static DEVICE_ATTR_RW(fast_charge);
 
 static struct attribute *w202_bq_attrs[] = {
 	&dev_attr_stop_charge.attr,
@@ -97,6 +128,7 @@ static struct attribute *w202_bq_attrs[] = {
 	&dev_attr_configuration.attr,
 	&dev_attr_chip_identity.attr,
 	&dev_attr_charging_policy.attr,
+	&dev_attr_fast_charge.attr,
 	NULL,
 };
 

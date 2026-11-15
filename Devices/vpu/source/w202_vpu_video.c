@@ -16,6 +16,8 @@
 #include <media/v4l2-mem2mem.h>
 #include <media/videobuf2-vmalloc.h>
 #include "w202_vpu_native.h"
+#include "w202_vpu_h264.h"
+#include "w202_vpu_hevc.h"
 
 #define W202_VIDEO_NAME "w202-vpu-h264"
 #define W202_MAX_INPUT (8U * 1024 * 1024)
@@ -34,6 +36,7 @@ struct w202_video_context {
 	struct w202_vpu_video *video;
 	struct v4l2_ctrl_handler controls;
 	struct v4l2_ctrl *sps, *pps, *slice, *decode, *scaling, *weights;
+	struct v4l2_ctrl *hevc_sps, *hevc_pps, *hevc_slice, *hevc_decode;
 	struct v4l2_pix_format output, capture;
 	struct work_struct work;
 	atomic_t abort;
@@ -94,7 +97,7 @@ static void format_fill(struct v4l2_pix_format *pix, bool output)
 		pix->pixelformat = V4L2_PIX_FMT_H264_SLICE;
 		pix->bytesperline = 0;
 		pix->sizeimage = PAGE_ALIGN(clamp(pix->sizeimage,
-						64U * 1024, W202_MAX_INPUT + W202_H264_BSM_PADDING));
+						64U * 1024, W202_MAX_INPUT + W202_VPU_BSM_PADDING));
 	} else {
 		pix->pixelformat = V4L2_PIX_FMT_NV12;
 		pix->bytesperline = pix->width;
@@ -119,10 +122,10 @@ static int video_querycap(struct file *file, void *priv, struct v4l2_capability 
 
 static int video_enum_format(struct file *file, void *priv, struct v4l2_fmtdesc *fmt)
 {
-	if (fmt->index)
+	if (fmt->index > (V4L2_TYPE_IS_OUTPUT(fmt->type) ? 1 : 0))
 		return -EINVAL;
 	fmt->pixelformat = V4L2_TYPE_IS_OUTPUT(fmt->type) ?
-		V4L2_PIX_FMT_H264_SLICE : V4L2_PIX_FMT_NV12;
+		(fmt->index ? V4L2_PIX_FMT_HEVC_SLICE : V4L2_PIX_FMT_H264_SLICE) : V4L2_PIX_FMT_NV12;
 	return 0;
 }
 
@@ -130,6 +133,7 @@ static int video_enum_framesizes(struct file *file, void *priv,
 				struct v4l2_frmsizeenum *size)
 {
 	if (size->index || (size->pixel_format != V4L2_PIX_FMT_H264_SLICE &&
+			   size->pixel_format != V4L2_PIX_FMT_HEVC_SLICE &&
 			   size->pixel_format != V4L2_PIX_FMT_NV12))
 		return -EINVAL;
 	size->type = V4L2_FRMSIZE_TYPE_STEPWISE;
@@ -152,12 +156,34 @@ static int video_try_format(struct file *file, void *priv, struct v4l2_format *f
 {
 	struct w202_video_context *ctx = file_context(file);
 	bool output = V4L2_TYPE_IS_OUTPUT(fmt->type);
+	bool hevc = output ? fmt->fmt.pix.pixelformat == V4L2_PIX_FMT_HEVC_SLICE :
+		ctx->output.pixelformat == V4L2_PIX_FMT_HEVC_SLICE;
+	u32 width = clamp(fmt->fmt.pix.width, 16U, 1920U);
+	u32 height = clamp(fmt->fmt.pix.height, 16U, 1088U);
 
 	if (!output) {
 		fmt->fmt.pix.width = ctx->output.width;
 		fmt->fmt.pix.height = ctx->output.height;
 	}
 	format_fill(&fmt->fmt.pix, output);
+	if (hevc) {
+		const struct v4l2_ctrl_hevc_sps *s = ctx->hevc_sps->p_cur.p_hevc_sps;
+		u32 log_ctu = s->log2_min_luma_coding_block_size_minus3 + 3 +
+			s->log2_diff_max_min_luma_coding_block_size;
+		u32 alignment = log_ctu >= 4 && log_ctu <= 6 ? 1U << log_ctu : 64;
+
+		if (output) {
+			fmt->fmt.pix.pixelformat = V4L2_PIX_FMT_HEVC_SLICE;
+			fmt->fmt.pix.width = ALIGN(width, 8);
+			fmt->fmt.pix.height = ALIGN(height, 8);
+		} else {
+			fmt->fmt.pix.width = ALIGN(ctx->output.width, alignment);
+			fmt->fmt.pix.height = ALIGN(ctx->output.height, alignment);
+			fmt->fmt.pix.bytesperline = fmt->fmt.pix.width;
+			fmt->fmt.pix.sizeimage = PAGE_ALIGN(pixel_size(&fmt->fmt.pix) +
+							auxiliary_size(&fmt->fmt.pix));
+		}
+	}
 	return 0;
 }
 
@@ -172,9 +198,10 @@ static int video_set_format(struct file *file, void *priv, struct v4l2_format *f
 	video_try_format(file, priv, fmt);
 	*queue_format(ctx, fmt->type) = fmt->fmt.pix;
 	if (output) {
-		ctx->capture.width = ctx->output.width;
-		ctx->capture.height = ctx->output.height;
-		format_fill(&ctx->capture, false);
+		struct v4l2_format capture = {.type = V4L2_BUF_TYPE_VIDEO_CAPTURE};
+
+		video_try_format(file, priv, &capture);
+		ctx->capture = capture.fmt.pix;
 	}
 	return 0;
 }
@@ -220,7 +247,7 @@ static int buffer_prepare(struct vb2_buffer *buffer)
 		return -EINVAL;
 	if (output) {
 		if (!used || used > W202_MAX_INPUT ||
-		    used + W202_H264_BSM_PADDING > vb2_plane_size(buffer, 0))
+		    used + W202_VPU_BSM_PADDING > vb2_plane_size(buffer, 0))
 			return -EINVAL;
 	} else {
 		WRITE_ONCE(buffer_state(buffer)->decoded, false);
@@ -379,6 +406,167 @@ struct w202_video_references {
 	struct w202_h264_reference h264[2][W202_H264_MAX_REFERENCES];
 };
 
+static int prepare_hevc_input(struct vb2_buffer *buffer, struct dma_buf *buf,
+			      struct w202_hevc_job *job)
+{
+	u32 i, zeros = 0, removed = 0, header_removed = 0;
+	u32 bytes = vb2_get_plane_payload(buffer, 0);
+	u32 offset = job->slice->data_byte_offset;
+	u8 *data = vb2_plane_vaddr(buffer, 0);
+	int ret, end;
+
+	if (!data || bytes < 3 || offset < 3 || offset >= bytes || offset > 512)
+		return -EINVAL;
+	ret = dma_buf_begin_cpu_access(buf, DMA_BIDIRECTIONAL);
+	if (ret)
+		return ret;
+	if ((data[0] & 0x81) || (data[1] & 0xf8) ||
+	    ((data[0] >> 1) & 63) != job->slice->nal_unit_type ||
+	    (data[1] & 7) != job->slice->nuh_temporal_id_plus1 || !(data[2] & 0x80)) {
+		ret = -EINVAL;
+		goto out;
+	}
+	/* V4L2 offsets count EBSP bytes. The BSM removes emulation prevention
+	 * bytes, so its read-bits count must describe the RBSP header instead. */
+	for (i = 2; i < bytes; i++) {
+		if (zeros == 2 && data[i] == 3) {
+			if (i + 1 == bytes || data[i + 1] > 3 || i == offset) {
+				ret = -EINVAL;
+				goto out;
+			}
+			removed++;
+			if (i < offset)
+				header_removed++;
+			zeros = 0;
+		} else {
+			zeros = data[i] ? 0 : min(zeros + 1, 2U);
+		}
+	}
+	job->input_bytes = bytes;
+	job->nalu_bytes = bytes - removed;
+	job->header_bits = (offset - header_removed) * 8;
+out:
+	end = dma_buf_end_cpu_access(buf, DMA_BIDIRECTIONAL);
+	return ret ? ret : end;
+}
+
+static void decode_hevc(struct w202_video_context *ctx)
+{
+	struct w202_vpu_video *video = ctx->video;
+	struct vb2_v4l2_buffer *src = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
+	struct vb2_v4l2_buffer *dst = v4l2_m2m_next_dst_buf(ctx->fh.m2m_ctx);
+	struct media_request *request = src->vb2_buf.req_obj.req;
+	struct w202_hevc_job job = {};
+	struct w202_vpu_config *config = NULL;
+	struct codec_file *native = NULL;
+	struct dma_buf *input = NULL, *frame = NULL;
+	struct w202_vpu_iova input_map = {}, frame_map = {};
+	u32 pixels = pixel_size(&ctx->capture);
+	int ret, ended;
+
+	ret = v4l2_ctrl_request_setup(request, &ctx->controls);
+	if (ret)
+		goto done;
+	if (ctx->hevc_slice->elems != 1) {
+		ret = -EOPNOTSUPP;
+		goto done;
+	}
+	job.sps = ctx->hevc_sps->p_cur.p_hevc_sps;
+	job.pps = ctx->hevc_pps->p_cur.p_hevc_pps;
+	job.slice = ctx->hevc_slice->p_cur.p_hevc_slice_params;
+	job.decode = ctx->hevc_decode->p_cur.p;
+	input = buffer_dmabuf(&src->vb2_buf);
+	if (IS_ERR(input)) {
+		ret = PTR_ERR(input);
+		input = NULL;
+		goto done;
+	}
+	frame = buffer_dmabuf(&dst->vb2_buf);
+	if (IS_ERR(frame)) {
+		ret = PTR_ERR(frame);
+		frame = NULL;
+		goto done;
+	}
+	if (input == frame) {
+		ret = -EINVAL;
+		goto done;
+	}
+	ret = prepare_hevc_input(&src->vb2_buf, input, &job);
+	if (ret)
+		goto done;
+	config = kzalloc(sizeof(*config), GFP_KERNEL);
+	if (!config) {
+		ret = -ENOMEM;
+		goto done;
+	}
+	job.input_address = 0x40000000;
+	job.output_address = 0x41000000;
+	job.auxiliary_address = job.output_address + pixels;
+	job.input_capacity = vb2_plane_size(&src->vb2_buf, 0);
+	job.output_capacity = pixels;
+	job.auxiliary_capacity = auxiliary_size(&ctx->capture);
+	ret = w202_hevc_build_idr(&job, config);
+	if (ret)
+		goto done;
+	if (config->width != ctx->capture.width || config->height != ctx->capture.height ||
+	    job.sps->pic_width_in_luma_samples != ctx->output.width ||
+	    job.sps->pic_height_in_luma_samples != ctx->output.height) {
+		ret = -EINVAL;
+		goto done;
+	}
+	if (atomic_read(&ctx->abort)) {
+		ret = -ECANCELED;
+		goto done;
+	}
+	ret = w202_vpu_native_begin(video->dev, &native);
+	if (ret)
+		goto done;
+	ret = w202_vpu_native_import(native, input, &input_map);
+	if (!ret)
+		ret = w202_vpu_native_import(native, frame, &frame_map);
+	if (!ret)
+		ret = w202_vpu_native_validate_buffers(native, &input_map, &frame_map);
+	if (ret)
+		goto done;
+	ret = dma_buf_begin_cpu_access(input, DMA_BIDIRECTIONAL);
+	if (ret)
+		goto done;
+	memset((u8 *)vb2_plane_vaddr(&src->vb2_buf, 0) + job.input_bytes, 0, W202_VPU_BSM_PADDING);
+	ret = dma_buf_end_cpu_access(input, DMA_BIDIRECTIONAL);
+	if (ret)
+		goto done;
+	job.input_address = input_map.iova_addr;
+	job.input_capacity = min_t(u64, input_map.size, job.input_capacity);
+	job.output_address = frame_map.iova_addr;
+	job.output_capacity = min_t(u64, frame_map.size, pixels);
+	job.auxiliary_address = frame_map.iova_addr + pixels;
+	job.auxiliary_capacity = min_t(u64, frame_map.size - pixels, job.auxiliary_capacity);
+	ret = w202_hevc_build_idr(&job, config);
+	if (!ret)
+		ret = w202_vpu_native_execute(native, config, &ctx->abort);
+done:
+	if (native) {
+		ended = w202_vpu_native_end(native);
+		if (ended)
+			ret = ended;
+	}
+	if (input)
+		dma_buf_put(input);
+	if (frame)
+		dma_buf_put(frame);
+	kfree(config);
+	if (ret)
+		dev_dbg(video->dev, "V4L2 HEVC job failed: %d\n", ret);
+	WRITE_ONCE(buffer_state(&dst->vb2_buf)->reference, !ret);
+	WRITE_ONCE(buffer_state(&dst->vb2_buf)->decoded, !ret);
+	v4l2_m2m_buf_copy_metadata(src, dst, true);
+	src->sequence = ctx->sequence;
+	dst->sequence = ctx->sequence++;
+	v4l2_ctrl_request_complete(request, &ctx->controls);
+	v4l2_m2m_buf_done_and_job_finish(video->m2m, ctx->fh.m2m_ctx,
+					ret ? VB2_BUF_STATE_ERROR : VB2_BUF_STATE_DONE);
+}
+
 static void decode_work(struct work_struct *work)
 {
 	struct w202_video_context *ctx = container_of(work, struct w202_video_context, work);
@@ -386,7 +574,7 @@ static void decode_work(struct work_struct *work)
 	struct vb2_v4l2_buffer *src = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
 	struct vb2_v4l2_buffer *dst = v4l2_m2m_next_dst_buf(ctx->fh.m2m_ctx);
 	struct media_request *request = src->vb2_buf.req_obj.req;
-	struct w202_h264_config *config = NULL;
+	struct w202_vpu_config *config = NULL;
 	struct w202_h264_job job = {};
 	struct codec_file *native = NULL;
 	struct dma_buf *input = NULL, *frame = NULL;
@@ -396,6 +584,10 @@ static void decode_work(struct work_struct *work)
 	unsigned int i, list, active[2] = {};
 	int ret, ended;
 
+	if (ctx->output.pixelformat == V4L2_PIX_FMT_HEVC_SLICE) {
+		decode_hevc(ctx);
+		return;
+	}
 	ret = v4l2_ctrl_request_setup(request, &ctx->controls);
 	if (ret)
 		goto done;
@@ -550,7 +742,7 @@ static void decode_work(struct work_struct *work)
 	if (ret)
 		goto done;
 	memset((u8 *)vb2_plane_vaddr(&src->vb2_buf, 0) + job.input_bytes,
-	       0, W202_H264_BSM_PADDING);
+	       0, W202_VPU_BSM_PADDING);
 	ret = dma_buf_end_cpu_access(input, DMA_BIDIRECTIONAL);
 	if (ret)
 		goto done;
@@ -633,6 +825,11 @@ static int request_validate(struct media_request *request)
 		V4L2_CID_STATELESS_H264_SPS, V4L2_CID_STATELESS_H264_PPS,
 		V4L2_CID_STATELESS_H264_SLICE_PARAMS, V4L2_CID_STATELESS_H264_DECODE_PARAMS,
 	};
+	static const u32 hevc_required[] = {
+		V4L2_CID_STATELESS_HEVC_SPS, V4L2_CID_STATELESS_HEVC_PPS,
+		V4L2_CID_STATELESS_HEVC_SLICE_PARAMS, V4L2_CID_STATELESS_HEVC_DECODE_PARAMS,
+	};
+	const u32 *ids;
 	unsigned int i;
 	int ret = 0;
 
@@ -655,8 +852,9 @@ static int request_validate(struct media_request *request)
 	handler = v4l2_ctrl_request_hdl_find(request, &ctx->controls);
 	if (!handler)
 		return -ENOENT;
+	ids = ctx->output.pixelformat == V4L2_PIX_FMT_HEVC_SLICE ? hevc_required : required;
 	for (i = 0; i < ARRAY_SIZE(required); i++)
-		if (!v4l2_ctrl_request_hdl_ctrl_find(handler, required[i])) {
+		if (!v4l2_ctrl_request_hdl_ctrl_find(handler, ids[i])) {
 			ret = -ENOENT;
 			break;
 		}
@@ -680,6 +878,11 @@ static int controls_init(struct w202_video_context *ctx)
 		{.id = V4L2_CID_STATELESS_H264_DECODE_PARAMS},
 		{.id = V4L2_CID_STATELESS_H264_SCALING_MATRIX},
 		{.id = V4L2_CID_STATELESS_H264_PRED_WEIGHTS},
+		{.id = V4L2_CID_STATELESS_HEVC_SPS},
+		{.id = V4L2_CID_STATELESS_HEVC_PPS},
+		{.id = V4L2_CID_STATELESS_HEVC_SLICE_PARAMS,
+		 .dims = {1}, .flags = V4L2_CTRL_FLAG_DYNAMIC_ARRAY},
+		{.id = V4L2_CID_STATELESS_HEVC_DECODE_PARAMS},
 		{.id = V4L2_CID_STATELESS_H264_DECODE_MODE,
 		 .max = V4L2_STATELESS_H264_DECODE_MODE_SLICE_BASED,
 		 .def = V4L2_STATELESS_H264_DECODE_MODE_SLICE_BASED},
@@ -691,9 +894,20 @@ static int controls_init(struct w202_video_context *ctx)
 		 .max = V4L2_MPEG_VIDEO_H264_PROFILE_HIGH,
 		 .menu_skip_mask = BIT(V4L2_MPEG_VIDEO_H264_PROFILE_EXTENDED),
 		 .def = V4L2_MPEG_VIDEO_H264_PROFILE_BASELINE},
+		{.id = V4L2_CID_STATELESS_HEVC_DECODE_MODE,
+		 .max = V4L2_STATELESS_HEVC_DECODE_MODE_SLICE_BASED,
+		 .def = V4L2_STATELESS_HEVC_DECODE_MODE_SLICE_BASED},
+		{.id = V4L2_CID_STATELESS_HEVC_START_CODE,
+		 .max = V4L2_STATELESS_HEVC_START_CODE_NONE,
+		 .def = V4L2_STATELESS_HEVC_START_CODE_NONE},
+		{.id = V4L2_CID_MPEG_VIDEO_HEVC_PROFILE,
+		 .min = V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN,
+		 .max = V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN,
+		 .def = V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN},
 	};
 	struct v4l2_ctrl **controls[] = {
 		&ctx->sps, &ctx->pps, &ctx->slice, &ctx->decode, &ctx->scaling, &ctx->weights,
+		&ctx->hevc_sps, &ctx->hevc_pps, &ctx->hevc_slice, &ctx->hevc_decode,
 	};
 	unsigned int i;
 	int ret;
@@ -706,7 +920,8 @@ static int controls_init(struct w202_video_context *ctx)
 
 		if (i < ARRAY_SIZE(controls))
 			*controls[i] = ctrl;
-		else if (ctrl && configs[i].id == V4L2_CID_MPEG_VIDEO_H264_PROFILE)
+		else if (ctrl && (configs[i].id == V4L2_CID_MPEG_VIDEO_H264_PROFILE ||
+				 configs[i].id == V4L2_CID_MPEG_VIDEO_HEVC_PROFILE))
 			ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 	}
 	return ctx->controls.error;

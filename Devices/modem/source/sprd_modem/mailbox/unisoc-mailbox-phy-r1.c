@@ -166,7 +166,10 @@ void sprd_mbox_change_wakeup_flag_r1(bool wakeup_flag)
 	if (mbox_wakeup_flag_callback_r1)
 		mbox_wakeup_flag_callback_r1(wakeup_flag);
 	else
-		pr_err("mbox wakeup callback is null\n");
+		/* SIPC may be absent when only the audio DSP uses this mailbox.
+		 * The wakeup observer is optional; message delivery is independent.
+		 */
+		pr_debug("no SIPC wakeup observer registered\n");
 }
 EXPORT_SYMBOL_GPL(sprd_mbox_change_wakeup_flag_r1);
 

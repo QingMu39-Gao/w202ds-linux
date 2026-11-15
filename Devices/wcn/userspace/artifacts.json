@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "base": "project",
+  "rootfs": "output/userspace/wcn/rootfs",
+  "required": [
+    "usr/libexec/w202-bt-init",
+    "usr/libexec/w202ds-gnss",
+    "usr/lib/firmware/bt_configure_pskey.ini",
+    "usr/lib/firmware/bt_configure_rf.ini"
+  ]
+}

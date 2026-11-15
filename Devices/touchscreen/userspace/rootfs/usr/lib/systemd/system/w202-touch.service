@@ -1,0 +1,13 @@
+[Unit]
+Description=W202DS Himax touchscreen
+Requires=w202-bsp.service
+After=w202-bsp.service
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe himax_w202
+
+[Install]
+WantedBy=multi-user.target

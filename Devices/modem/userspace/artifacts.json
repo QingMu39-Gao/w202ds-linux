@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "base": "project",
+  "rootfs": "output/userspace/modem/rootfs",
+  "required": [
+    "usr/libexec/w202-modem-storage",
+    "usr/libexec/w202-android-runtime",
+    "usr/local/sbin/w202-modem-at",
+    "usr/local/sbin/w202-modem-netcheck",
+    "usr/share/w202ds/modem/runtime-properties.bin",
+    "opt/w202ds/modemmanager/sbin/ModemManager",
+    "opt/w202ds/modemmanager/lib/ModemManager/libmm-plugin-w202ds.so",
+    "usr/lib/udev/rules.d/77-mm-w202ds.rules"
+  ]
+}

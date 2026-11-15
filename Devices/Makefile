@@ -73,6 +73,7 @@ help:
 	  'Reuse old output: KERNEL_OUT=/old/output SKIP_KERNEL=1 SKIP_KERNEL_CHECK=1' \
 	  'Use -n to inspect commands. Each target has its own output, symbols, log and receipt.' \
 	  'all builds current Server modules; diagnostics and reference targets are explicit.'
+	@printf '%s\n' 'Userspace: make -f userspace.mk help (separate from kernel/module targets).'
 list:
 	@$(foreach m,$(sort $(MODULES)),printf '%-25s %-28s %s\n' '$(m)' '$($(m).ko)' 'providers: $($(m).deps)';)
 all: $(SERVER_MODULES)

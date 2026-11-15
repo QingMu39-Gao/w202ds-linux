@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* W202DS UMS9620 platform support. Bounded CCF/devfreq core clock,
- * inherited voltage through the DT supply and full runtime domain cycling.
+ * bin-qualified voltage/frequency control and full runtime domain cycling.
  * Real supply and hardware readbacks are mandatory before GPU-domain MMIO.
  */
 #include <linux/clk.h>
@@ -25,6 +25,7 @@
 #include <linux/workqueue.h>
 #include "w202_gpu_qos.h"
 #include "panfrost_ums9620.h"
+#include "panfrost_ums9620_dvfs.h"
 #include "panfrost_ums9620_thermal.h"
 
 /* A separate provider module owns the CCF callbacks. Registering these
@@ -47,16 +48,18 @@ static struct platform_driver ums_provider_driver = {
 
 struct ums_field { struct regmap *map; u32 reg, mask, old; };
 
-/* GPU DVFS indices 2..5 select 153.6, 384 and 512MHz (TGPLL) and GPLL/2.5;
+/* GPU DVFS indices 2..6 select 153.6, 384 and 512MHz (TGPLL), GPLL/2.5
+ * and GPLL/2. The last index is an explicitly selected extended profile;
  * the stock index maps carry selector == index. Every index used here points
- * at voltage slot 0, which holds the measured inherited supply: a frequency
- * change never moves the voltage. 512MHz and GPLL/2.5 = 655.2MHz (GPLL at
- * 1638MHz, the stock T760 maximum) are offered only on a T760 whose GPU bin
- * the stock driver runs at those rates with no more than the inherited
- * supply. T770/T790 rates (680, 780, 850MHz) are never used.
+ * at voltage slot 0, synchronized with the regulator before each clock
+ * change. High rates require a T760 and a supply that satisfies the
+ * chip's GPU-bin voltage table.
+ * The default T760 profile stops at 655.2MHz. Extended profiles keep the
+ * integer PLL at an exact multiple of its 26MHz reference, and require
+ * the inherited index-6 voltage slot to specify 750mV.
  */
 #define UMS_IDX_LO 2
-#define UMS_IDX_HI 5
+#define UMS_IDX_HI 6
 #define UMS_MAP(i) (0x154 + 4 * (i))
 #define UMS_T760_GPLL 1638000000UL
 
@@ -65,16 +68,20 @@ struct ums_gpu {
 	struct ums_field top_dvfs, sw_dvfs, volt0, dvfs_9ac, dvfs_index;
 	struct ums_field map[UMS_IDX_HI + 1];
 	unsigned long rates[UMS_IDX_HI + 1];	/* by index; 0 = not offered */
+	int voltages[UMS_IDX_HI + 1];
 	struct clk_hw core_hw;
 	struct device *dev;
 	struct regmap *state_map, *aon;
 	struct reset_control *rstc;
 	struct mutex lock;
+	/* Outside CCF's prepare lock: regulator transfers may need clocks. */
+	struct mutex dvfs_lock;
 	void __iomem *nic;
 	unsigned long rate;
 	unsigned long suspends, resumes;
 	bool accessible, domain_live;
-	int voltage_uv;
+	int voltage_uv, inherited_uv;
+	bool voltage_requested;
 	u32 state_reg, state_mask, off_state;
 	struct clk *clk[16];
 	struct regulator *supply;
@@ -92,6 +99,10 @@ struct ums_gpu {
 static unsigned int ums9620_freq_index = 3;
 module_param(ums9620_freq_index, uint, 0444);
 MODULE_PARM_DESC(ums9620_freq_index, "UMS9620 initial index: 2=153.6MHz, 3=384MHz; devfreq may change it");
+
+static unsigned int ums9620_max_freq = 655200000;
+module_param(ums9620_max_freq, uint, 0444);
+MODULE_PARM_DESC(ums9620_max_freq, "T760 GPU profile: 655200000 (default), 819000000 or 845000000Hz; extended profiles require the stock 750mV index-6 slot");
 
 static int ums_rate_index(struct ums_gpu *g, unsigned long rate)
 {
@@ -126,7 +137,67 @@ static int ums_field_set(struct ums_field *f, u32 val)
 {
 	return regmap_update_bits(f->map, f->reg, f->mask, val);
 }
-static int ums_power_off(struct ums_gpu *g)
+
+static int ums_voltage_get(void *data)
+{
+	struct ums_gpu *g = data;
+	int uv = regulator_get_voltage(g->supply);
+
+	if (uv >= 0)
+		WRITE_ONCE(g->voltage_uv, uv);
+	return uv;
+}
+
+/* Caller holds dvfs_lock, never CCF's prepare lock. Keep the HW-DVFS
+ * slot and PMIC selector consistent; writing only one lets the next
+ * frequency request undo the voltage change. The inherited supply is
+ * the floor, so this change introduces no low-voltage operating points.
+ */
+static int ums_voltage_set(void *data, int uv)
+{
+	struct ums_gpu *g = data;
+	u32 value;
+	int ret, actual;
+
+	if (uv < g->inherited_uv || uv > 750000 || uv % 3125)
+		return -ERANGE;
+	mutex_lock(&g->lock);
+	ret = 0;
+	if (g->domain_live && g->dvfs_saved) {
+		ret = ums_field_set(&g->volt0, uv / 3125);
+		if (!ret)
+			ret = regmap_read(g->volt0.map, g->volt0.reg, &value);
+		if (!ret && (value & g->volt0.mask) != uv / 3125)
+			ret = -EIO;
+	}
+	mutex_unlock(&g->lock);
+	if (ret)
+		return ret;
+	actual = ums_voltage_get(g);
+	if (actual < 0)
+		return actual;
+	if (actual != uv || g->voltage_requested) {
+		ret = regulator_set_voltage(g->supply, uv, uv);
+		if (ret)
+			return ret;
+		g->voltage_requested = true;
+		/* HW DVFS can update the selector behind the regulator core's
+		 * cached consumer request. Synchronize if it did so.
+		 */
+		if (ums_voltage_get(g) != uv) {
+			ret = regulator_sync_voltage(g->supply);
+			if (ret)
+				return ret;
+		}
+	}
+	usleep_range(1000, 1500);
+	actual = ums_voltage_get(g);
+	if (actual < 0)
+		return actual;
+	return actual == uv ? 0 : -EIO;
+}
+
+static int ums_power_off_locked(struct ums_gpu *g)
 {
  u32 state;
  int i, ret = 0, err;
@@ -137,9 +208,20 @@ static int ums_power_off(struct ums_gpu *g)
  g->accessible = false;
  if (g->domain_live) {
   if (g->dvfs_saved) {
-   err = ums_field_set(&g->dvfs_index, g->dvfs_index.old);
-   if (err && !ret) ret = err;
-   udelay(100);
+   /* Park at the lowest supported clock before restoring voltage maps.
+    * The saved index belongs to a powered-off domain and need not be a
+    * safe running OPP at the inherited voltage.
+    */
+   err = ums_field_set(&g->dvfs_index, UMS_IDX_LO);
+   if (!err) {
+    usleep_range(1000, 1500);
+    err = regmap_read(g->dvfs_index.map, g->dvfs_index.reg, &state);
+    if (!err && (state & 7) != UMS_IDX_LO) err = -EIO;
+   }
+   if (err) {
+    mutex_unlock(&g->lock);
+    return err;
+   }
    err = ums_field_set(&g->sw_dvfs, g->sw_dvfs.old);
    if (err && !ret) ret = err;
    err = ums_field_set(&g->top_dvfs, g->top_dvfs.old);
@@ -184,12 +266,30 @@ static int ums_power_off(struct ums_gpu *g)
   if (ret) return ret;
   g->modified = false;
  }
+ if (g->supply && (g->voltage_requested ||
+                  READ_ONCE(g->voltage_uv) != g->inherited_uv)) {
+  /* The domain is confirmed off before returning the PMIC to its
+   * pre-driver voltage, including probe-failure and unbind paths. */
+  ret = ums_voltage_set(g, g->inherited_uv);
+  if (ret)
+   dev_err(g->dev, "GPU inherited voltage restore failed: %d\n", ret);
+ }
  if (g->supply_enabled) {
-  ret = regulator_disable(g->supply);
-  if (ret) return ret;
+  err = regulator_disable(g->supply);
+  if (err) return err;
   g->supply_enabled = false;
  }
- return 0;
+ return ret;
+}
+
+static int ums_power_off(struct ums_gpu *g)
+{
+	int ret;
+
+	mutex_lock(&g->dvfs_lock);
+	ret = ums_power_off_locked(g);
+	mutex_unlock(&g->dvfs_lock);
+	return ret;
 }
 
 static void ums_cleanup(void *data)
@@ -250,9 +350,9 @@ static int ums_frequency_init(struct ums_gpu *g, struct device *dev,
 		if (ret) return ret;
 		if ((value & 0x3f) != i && g->rates[i]) return -EIO;
 	}
-	/* Slot 0 holds precisely the existing supply voltage. Point every
-	 * index used at that slot, keeping voltage unchanged when hardware
-	 * DVFS takes control. The vendor uses 3.125mV selectors.
+	/* Slot 0 holds the voltage established before enabling the domain.
+	 * Software sequences regulator/slot updates outside CCF, then changes
+	 * the index. The vendor uses 3.125mV selectors.
 	 */
 	ret = ums_field_set(&g->volt0, uv / 3125);
 	if (ret) return ret;
@@ -334,6 +434,16 @@ static int ums_core_set_rate(struct clk_hw *hw, unsigned long rate,
   return index;
  mutex_lock(&g->lock);
  if (g->accessible) {
+  if (READ_ONCE(g->voltage_uv) < g->voltages[index]) {
+   ret = -ERANGE;
+   goto out;
+  }
+  ret = regmap_read(g->volt0.map, g->volt0.reg, &value);
+  if (ret) goto out;
+  if ((value & g->volt0.mask) * 3125 < g->voltages[index]) {
+   ret = -ERANGE;
+   goto out;
+  }
   ret = regmap_read(g->dvfs_index.map, UMS_MAP(index), &value);
   if (ret) goto out;
   if ((value & 0x3ff) != index) {
@@ -361,6 +471,48 @@ static const struct clk_ops ums_core_ops = {
  .round_rate = ums_core_round_rate,
  .set_rate = ums_core_set_rate,
 };
+
+static int ums_dvfs_set_index(void *data, int index)
+{
+	struct ums_gpu *g = data;
+	int ret = clk_set_rate(g->core_hw.clk, g->rates[index]);
+
+	if (ret)
+		return ret;
+	if (clk_get_rate(g->core_hw.clk) != g->rates[index])
+		return -EIO;
+	ret = ums_voltage_get(g);
+	if (ret < 0)
+		return ret;
+	return ret >= g->voltages[index] && ret <= 750000 ? 0 : -ERANGE;
+}
+
+int panfrost_ums9620_set_rate(struct panfrost_device *pfdev, unsigned long rate)
+{
+	static const struct ums_dvfs_ops ops = {
+		.get_voltage = ums_voltage_get,
+		.set_voltage = ums_voltage_set,
+		.set_index = ums_dvfs_set_index,
+	};
+	struct ums_gpu *g = pfdev->platform_data;
+	int index = ums_rate_index(g, rate), ret;
+
+	if (index < 0)
+		return index;
+	mutex_lock(&g->dvfs_lock);
+	if (!READ_ONCE(g->accessible))
+		ret = clk_set_rate(pfdev->clock, rate);
+	else
+		ret = ums_dvfs_transition(&ops, g, index, g->voltages[index]);
+	if (ret > 0) {
+		dev_warn_ratelimited(g->dev, "GPU voltage reduction failed: %duV at %luHz\n",
+				    READ_ONCE(g->voltage_uv), rate);
+		ret = 0;
+	}
+	mutex_unlock(&g->dvfs_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(panfrost_ums9620_set_rate);
 
 static void ums_unregister_core_clock(void *data)
 {
@@ -440,14 +592,17 @@ static int ums_init_bus(struct ums_gpu *g, struct device_node *np)
  return 0;
 }
 
-static int ums_power_on(struct ums_gpu *g)
+static int ums_power_on_locked(struct ums_gpu *g)
 {
  struct device *dev = g->dev;
  struct device_node *np = dev->of_node;
  u32 state, gate, reset;
- int ret, uv;
+ int ret, uv, index = ums_rate_index(g, g->rate);
 
  if (READ_ONCE(g->accessible)) return 0;
+	if (index < 0) return index;
+	ret = ums_voltage_set(g, g->voltages[index]);
+	if (ret) return ret;
 	if (!g->supply_enabled) {
 		ret = regulator_enable(g->supply);
 		if (ret) return ret;
@@ -456,7 +611,7 @@ static int ums_power_on(struct ums_gpu *g)
 	usleep_range(1000, 1500);
 	if (regulator_is_enabled(g->supply) != 1) return -EHOSTDOWN;
 	uv = regulator_get_voltage(g->supply);
-	if (uv != g->voltage_uv || uv < 650000 || uv > 750000)
+	if (uv != g->voltages[index] || uv < 650000 || uv > 750000)
 		return -ERANGE;
 	g->modified = true;
 	ret = ums_field_set(&g->field[0], 0); if (ret) return ret;
@@ -505,6 +660,16 @@ out_unlock:
 	return ret;
 }
 
+static int ums_power_on(struct ums_gpu *g)
+{
+	int ret;
+
+	mutex_lock(&g->dvfs_lock);
+	ret = ums_power_on_locked(g);
+	mutex_unlock(&g->dvfs_lock);
+	return ret;
+}
+
 int panfrost_ums9620_runtime_suspend(struct panfrost_device *pfdev)
 {
  struct ums_gpu *g = pfdev->platform_data;
@@ -539,9 +704,10 @@ static ssize_t w202_gpu_power_show(struct device *dev,
  if (!ret) ret = regmap_read(g->aon, 0, &gate);
  if (ret) len = ret;
  else len = sysfs_emit(buf,
-  "accessible=%u top=%08x interface=%u supply_owned=%u configured_hz=%lu max_hz=%lu thermal_cap=%u suspends=%lu resumes=%lu\n",
+  "accessible=%u top=%08x interface=%u supply_owned=%u configured_hz=%lu max_hz=%lu voltage_uv=%d inherited_uv=%d thermal_cap=%u suspends=%lu resumes=%lu\n",
   g->accessible, top & g->state_mask, !!(gate & BIT(11)),
-  g->supply_enabled, g->rate, ums_max_rate(g), READ_ONCE(g->hot),
+  g->supply_enabled, g->rate, ums_max_rate(g), READ_ONCE(g->voltage_uv),
+  g->inherited_uv, READ_ONCE(g->hot),
   g->suspends, g->resumes);
  mutex_unlock(&g->lock);
  return len;
@@ -563,7 +729,12 @@ static int ums_t760_rates(struct ums_gpu *g)
 	struct device_node *hwf = of_find_node_by_path("/hwfeature/auto");
 	const char *soc = NULL;
 	struct clk *gpll = NULL;
+	struct clk *gpll_div2 = NULL;
 	bool t760;
+	bool voltage_control = false;
+	bool known_bin = false, extended = false;
+	unsigned long pll_rate = UMS_T760_GPLL;
+	u32 slot4;
 	u32 bin = 0;
 	int i, ret;
 
@@ -581,24 +752,55 @@ static int ums_t760_rates(struct ums_gpu *g)
 	if (ret || bin > 3) {
 		dev_warn(g->dev, "GPU bin unreadable (%d, %u): rated as SS\n", ret, bin);
 		bin = 0;
+	} else {
+		known_bin = true;
+		voltage_control = regulator_is_supported_voltage(g->supply,
+			ums_t760_uv[bin][1], ums_t760_uv[bin][1]) > 0;
 	}
-	if (g->voltage_uv >= ums_t760_uv[bin][0] && (g->map[4].old & 0x3f) == 4)
+	if ((voltage_control || g->inherited_uv >= ums_t760_uv[bin][0]) &&
+	    (g->map[4].old & 0x3f) == 4) {
 		g->rates[4] = 512000000;
-	if (g->rates[4] && g->voltage_uv >= ums_t760_uv[bin][1] &&
+		g->voltages[4] = max(g->inherited_uv, ums_t760_uv[bin][0]);
+	}
+	if (g->rates[4] && (voltage_control || g->inherited_uv >= ums_t760_uv[bin][1]) &&
 	    (g->map[5].old & 0x3f) == 5) {
 		for (i = 0; i < g->n; i++)
 			if (!strcmp(__clk_get_name(g->clk[i]), "gpll"))
 				gpll = g->clk[i];
+			else if (!strcmp(__clk_get_name(g->clk[i]), "gpll-850m"))
+				gpll_div2 = g->clk[i];
+		if (ums9620_max_freq > 655200000 && known_bin && gpll_div2 &&
+		    (g->map[6].old & 0x3ff) == 0x106 && /* source 6, voltage slot 4 */
+		    regulator_is_supported_voltage(g->supply, 750000, 750000) > 0 &&
+		    !regmap_read(g->volt0.map, g->volt0.reg + 8, &slot4) &&
+		    (slot4 & g->volt0.mask) * 3125 == 750000) {
+			extended = true;
+			pll_rate = ums9620_max_freq * 2UL;
+		}
+		/* The W205 680/850MHz labels assume a 1.7GHz GPLL. This
+		 * integer PLL has a 26MHz step: use exact 1.638GHz (655.2/819)
+		 * or 1.690GHz (676/845), never silently label either as 850.
+		 */
 		/* The GPU runs from TGPLL (index 2/3) here: GPLL is idle. */
-		ret = gpll ? clk_set_rate(gpll, UMS_T760_GPLL) : -ENOENT;
-		if (!ret && clk_get_rate(gpll) == UMS_T760_GPLL)
-			g->rates[5] = UMS_T760_GPLL / 5 * 2;
-		else
-			dev_warn(g->dev, "GPLL not at %luHz (%d): no 655.2MHz\n",
-				 UMS_T760_GPLL, ret);
+		ret = gpll ? clk_set_rate(gpll, pll_rate) : -ENOENT;
+		if (!ret && clk_get_rate(gpll) == pll_rate) {
+			g->rates[5] = pll_rate / 5 * 2;
+			g->voltages[5] = max(g->inherited_uv, ums_t760_uv[bin][1]);
+			if (pll_rate > UMS_T760_GPLL)
+				g->voltages[5] = max(g->voltages[5], 700000);
+			if (extended && clk_get_rate(gpll_div2) == pll_rate / 2) {
+				g->rates[6] = pll_rate / 2;
+				g->voltages[6] = 750000;
+			}
+		} else
+			dev_warn(g->dev, "GPLL not at %luHz (%d): no GPLL GPU OPPs\n",
+				 pll_rate, ret);
 	}
-	dev_info(g->dev, "T760 GPU bin %u at %duV: up to %luHz\n",
-		 bin, g->voltage_uv, ums_max_rate(g));
+	if (ums9620_max_freq > 655200000 && !g->rates[6])
+		dev_warn(g->dev, "GPU extended profile unavailable; retaining qualified lower OPPs\n");
+	dev_info(g->dev, "T760 GPU bin %u: %duV floor, up to %luHz at %duV\n",
+		 bin, g->inherited_uv, ums_max_rate(g),
+		 g->voltages[ums_rate_index(g, ums_max_rate(g))]);
 	return 0;
 }
 
@@ -723,7 +925,7 @@ int panfrost_ums9620_add_opps(struct panfrost_device *pfdev)
 	for (i = UMS_IDX_LO; i <= UMS_IDX_HI; i++) {
 		if (!g->rates[i])
 			continue;
-		ret = dev_pm_opp_add(pfdev->dev, g->rates[i], 0);
+		ret = dev_pm_opp_add(pfdev->dev, g->rates[i], g->voltages[i]);
 		if (ret)
 			return ret;
 	}
@@ -748,6 +950,10 @@ int panfrost_ums9620_init(struct panfrost_device *pfdev)
 	if (!g) return -ENOMEM;
 	g->dev = dev;
 	mutex_init(&g->lock);
+	mutex_init(&g->dvfs_lock);
+	if (ums9620_max_freq != 655200000 && ums9620_max_freq != 819000000 &&
+	    ums9620_max_freq != 845000000)
+		return -EINVAL;
 	if (ums9620_freq_index != 2 && ums9620_freq_index != 3)
 		return -EINVAL;
 	g->rates[2] = 153600000;
@@ -768,9 +974,10 @@ int panfrost_ums9620_init(struct panfrost_device *pfdev)
 	}
 	uv = regulator_get_voltage(g->supply);
 	g->voltage_uv = uv;
-	/* Stock GPU OPPs span 550-750mV. LK may leave either 650mV or
-	 * 750mV across boots. Preserve it; do not program a voltage selector. */
-	if (uv < 550000 || uv > 750000)
+	g->inherited_uv = uv;
+	g->voltages[2] = g->voltages[3] = uv;
+	/* Do not introduce undervolting of the previously validated low OPPs. */
+	if (uv < 650000 || uv > 750000 || uv % 3125)
 		return dev_err_probe(dev, -ERANGE, "inherited supply outside stock GPU OPP range: %d\n", uv);
 	g->n = of_clk_get_parent_count(np);
 	if (g->n < 2 || g->n > ARRAY_SIZE(g->clk)) { g->n = 0; return -EINVAL; }

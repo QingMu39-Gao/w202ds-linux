@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "base": "project",
+  "rootfs": "output/userspace/keyboard/rootfs",
+  "required": [
+    "usr/libexec/w202-keyboard-attach"
+  ]
+}

@@ -13,12 +13,12 @@
 #include "w202_vpu_h264.h"
 #include "w202_vpu_h264_cabac.h"
 
-static void emit(struct w202_h264_config *c, __u32 offset, __u32 value)
+static void emit(struct w202_vpu_config *c, __u32 offset, __u32 value)
 {
-	if (c->count < W202_H264_MAX_REGS)
-		c->regs[c->count++] = (struct w202_h264_reg){offset, value};
+	if (c->count < W202_VPU_MAX_REGS)
+		c->regs[c->count++] = (struct w202_vpu_reg){offset, value};
 	else
-		c->count = W202_H264_MAX_REGS + 1;
+		c->count = W202_VPU_MAX_REGS + 1;
 }
 
 static int valid_span(__u64 address, __u64 capacity, __u64 needed)
@@ -27,7 +27,7 @@ static int valid_span(__u64 address, __u64 capacity, __u64 needed)
 	       address < 0x60000000 && capacity <= 0x60000000 - address;
 }
 
-static void emit_scaling(struct w202_h264_config *c, __u32 offset,
+static void emit_scaling(struct w202_vpu_config *c, __u32 offset,
 			 const __u8 *weights, unsigned int count)
 {
 	unsigned int i;
@@ -83,7 +83,7 @@ static int valid_weights(const struct v4l2_ctrl_h264_pred_weights *w, const unsi
 	return 1;
 }
 
-static void emit_weights(struct w202_h264_config *c,
+static void emit_weights(struct w202_vpu_config *c,
 			 const struct v4l2_ctrl_h264_pred_weights *w, const unsigned int active[2])
 {
 	unsigned int list, index;
@@ -105,7 +105,7 @@ static void emit_weights(struct w202_h264_config *c,
 	}
 }
 
-static int build_picture(const struct w202_h264_job *j, struct w202_h264_config *c,
+static int build_picture(const struct w202_h264_job *j, struct w202_vpu_config *c,
 			 int allow_b)
 {
 	/* CAVLC token symbol RAM, measured at the CPU table-transfer boundary.
@@ -219,7 +219,7 @@ static int build_picture(const struct w202_h264_job *j, struct w202_h264_config 
 	    !j->nalu_bytes || j->nalu_bytes > j->input_bytes ||
 	    sl->header_bit_size < 8 || sl->header_bit_size > j->nalu_bytes * 8 ||
 	    !valid_span(j->input_address, j->input_capacity,
-			(__u64)j->input_bytes + W202_H264_BSM_PADDING) ||
+			(__u64)j->input_bytes + W202_VPU_BSM_PADDING) ||
 	    !valid_span(j->output_address, j->output_capacity, y_size * 3 / 2) ||
 	    !valid_span(j->auxiliary_address, j->auxiliary_capacity, mbs * 80 + 1024))
 		return -EINVAL;
@@ -364,20 +364,20 @@ static int build_picture(const struct w202_h264_job *j, struct w202_h264_config 
 			emit(c, 0x2500 + list * 0x80 + i * 4, (__u32)((reference + y_size) >> 4));
 			emit(c, 0x2600 + list * 0x80 + i * 4, (__u32)(reference_aux >> 4));
 		}
-	return c->count <= W202_H264_MAX_REGS ? 0 : -E2BIG;
+	return c->count <= W202_VPU_MAX_REGS ? 0 : -E2BIG;
 }
 
-int w202_h264_build_ip(const struct w202_h264_job *job, struct w202_h264_config *config)
+int w202_h264_build_ip(const struct w202_h264_job *job, struct w202_vpu_config *config)
 {
 	return build_picture(job, config, 0);
 }
 
-int w202_h264_build_ipb(const struct w202_h264_job *job, struct w202_h264_config *config)
+int w202_h264_build_ipb(const struct w202_h264_job *job, struct w202_vpu_config *config)
 {
 	return build_picture(job, config, 1);
 }
 
-int w202_h264_build_idr(const struct w202_h264_job *job, struct w202_h264_config *config)
+int w202_h264_build_idr(const struct w202_h264_job *job, struct w202_vpu_config *config)
 {
 	if (!job || !job->slice || job->slice->slice_type != V4L2_H264_SLICE_TYPE_I)
 		return -EOPNOTSUPP;

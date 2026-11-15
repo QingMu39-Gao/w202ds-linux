@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Bounded protocol recovery; never reset the machine or source VBUS. */
+/* Bounded protocol recovery; never reset the machine; source control belongs to the regulator. */
 #include "controller.h"
 
 /* Two consecutive resets are enough to restart a stale source session.
@@ -53,7 +53,7 @@ void w202_pd_contract_established(struct w202_typec *pd)
 	}
 }
 
-/* Called only on a detach IRQ with the detector in DETACHED_SNK.
+/* Called only on a detach IRQ with the detector in DETACHED_SNK/SRC.
  * PD faults disable PD IRQs, not Type-C detection. Keep lifecycle ready so
  * that a real unplug can rearm TCPM without unloading modules.
  */
@@ -62,6 +62,12 @@ int w202_pd_detached(struct w202_typec *pd)
 	int ret;
 
 	lockdep_assert_held(&pd->lock);
+	/* A detach cannot rearm the port while our VBUS shutdown is uncertain. */
+	ret = w202_typec_stop_source(pd);
+	if (ret) {
+		w202_pd_latch_fault(pd, "detach-vbus-off-error");
+		return ret;
+	}
 	pd->contract_valid = false;
 	pd->reset_attempts = 0;
 	pd->nr_source_caps = 0;
@@ -97,11 +103,12 @@ int w202_pd_detached(struct w202_typec *pd)
 int w202_pd_cc_event(struct w202_typec *pd, u32 events, u32 status)
 {
 	lockdep_assert_held(&pd->lock);
-	/* Stock detector state 0 is DETACHED_SNK; state 2 is ATTACHED_SNK.
+	/* Stock detector states 0/3 are detached sink/source; 2/5 are attached.
 	 * DBG1[9] has no validated detach semantics in the stock driver.
 	 * An attached sample or VBUS-only event never unlocks a PD fault.
 	 */
-	if (!(events & BIT(1)) || (status & SC27XX_STATE_MASK))
+	if (!(events & BIT(1)) || ((status & SC27XX_STATE_MASK) != 0 &&
+	    (status & SC27XX_STATE_MASK) != 3))
 		return 0;
 	return w202_pd_detached(pd);
 }

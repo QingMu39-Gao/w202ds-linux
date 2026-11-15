@@ -1,7 +1,7 @@
 # W202DS 内核配置模型
 
 默认构建 `debug`。`desktop` 是屏幕、键盘及正常交互所需的功能基础；
-`debug` 继承 desktop，再叠加当前 Server 配置里的调试和诊断设置。
+`debug` 继承 desktop，再叠加详细日志和内核调试设置，不启用旧诊断恢复入口。
 它们描述内核能力，KDE/Weston、系统服务和软件包由发行版工程选择。
 
 ```text
@@ -73,7 +73,7 @@ REIMUKS 或其他构建工具可以重复传入 `--fragment`；外部覆盖始�
 python3 -B scripts/kernel-build.py configure --profile debug \
   --fragment /external/distribution.config \
   --fragment /external/user.config \
-  --out output/kernel-debug-custom
+  --out output/kernel-debug
 ```
 
 切换 Kconfig choice 时，应同时取消旧分支并选择新分支；生成器不猜测应放弃哪个请求。
@@ -82,8 +82,8 @@ python3 -B scripts/kernel-build.py configure --profile debug \
 
 ## 两种预设的边界
 
-debug 保留当前 `CONFIG_LOCALVERSION="-w202ds"`、自动 Git 后缀、
-强制诊断命令行 `rdinit=/w202diag`，需要匹配的诊断用户态。
+debug 保留当前 `CONFIG_LOCALVERSION="-w202ds"`、自动 Git 后缀和详细启动日志，
+通过标准 initramfs `/init` 启动；命令行不再包含 `rdinit=/w202diag` 或 `w202ds_diag`。
 完整功能与内建清单见 [DEBUG.md](DEBUG.md)。
 
 旧 `/dev/w202fbcon` 诊断实现及其 Kconfig、构建接入已删除；维护中的 initramfs
@@ -92,7 +92,8 @@ debug 保留当前 `CONFIG_LOCALVERSION="-w202ds"`、自动 Git 后缀、
 及其自动依赖变化单独核验。
 
 desktop 保留正常显示/键盘所需的基础支持和现有驱动 y/m 分工，
-关闭显式的 debugfs、SysRq、PM 调试、锁死检测、内嵌配置与早期启动日志。
+关闭显式的 debugfs、SysRq、PM 调试、锁死检测与内嵌配置。
+保留内建早期屏幕日志与 printk 时间戳，默认 loglevel=7，供原生 DRM 接管前输出启动信息。
 正常 DRM/面板驱动与键盘仍需配套模块。
 启动参数优先使用引导器提供的内容；没有参数时使用 desktop 片段中的保底值。
 引导器须提供实际 rootfs/initramfs 和板级所需参数。release 使用 `-w202ds-desktop` 区分模块目录。

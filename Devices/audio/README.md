@@ -47,7 +47,7 @@ make -C Devices KDIR=/path/to/prepared/kernel OUT=/path/to/modules w202ds-audio-
 并通过 genpd 保证 DSP、时钟、DMA 和 codec 的依赖顺序。
 
 启动顺序由 `userspace/rootfs/usr/libexec/w202-audio-start` 与
-同组件的 `w202-audio.service` 管理；REIMUKS 读取该模板并启用服务，显式加载保持黑名单的模块，
+同组件的 `w202-audio.service` 管理；发行版集成层 读取该模板并启用服务，显式加载保持黑名单的模块，
 应在内置 audio clock 的 deferred-probe 超时前启动。AGCP 时钟超过 deferred-probe 超时后仅补一次 bind，不做 unbind。
 
 ## 协议来源与验证边界

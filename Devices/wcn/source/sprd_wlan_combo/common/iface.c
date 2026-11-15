@@ -684,6 +684,20 @@ static netdev_tx_t iface_start_xmit(struct sk_buff *skb, struct net_device *ndev
 	if (-1 == ret)
 		goto out;
 
+	/* DHCP/IPv6 traffic may arrive while a station is unassociated.
+	 * Reject it before the special-data command path, which otherwise sends
+	 * DHCP to firmware and produces CMD_TX_DATA errors. Keep authentication
+	 * frames available while association/key setup is in progress.
+	 */
+	if ((vif->mode == SPRD_MODE_STATION || vif->mode == SPRD_MODE_STATION_SECOND) &&
+	    vif->sm_state != SPRD_CONNECTED &&
+	    skb->protocol != cpu_to_be16(ETH_P_PAE) &&
+	    skb->protocol != cpu_to_be16(0x88B4) /* WAPI authentication */) {
+		ndev->stats.tx_dropped++;
+		dev_kfree_skb(skb);
+		return NETDEV_TX_OK;
+	}
+
 	data_temp = (u8 *)(skb->data) + sizeof(struct ethhdr);
 	eap_temp = (struct sprd_eap_hdr *)data_temp;
 
@@ -711,7 +725,7 @@ static netdev_tx_t iface_start_xmit(struct sk_buff *skb, struct net_device *ndev
 	     vif->sm_state != SPRD_CONNECTED) ||
 	    ((vif->mode != SPRD_MODE_STATION && vif->mode != SPRD_MODE_STATION_SECOND) &&
 	     !(vif->state & VIF_STATE_OPEN))) {
-		printk_ratelimited("%s, %d, error! should not send this data\n",
+		pr_info_ratelimited("%s, %d, dropping data before connection\n",
 				   __func__, __LINE__);
 		dev_kfree_skb(skb);
 		return NETDEV_TX_OK;

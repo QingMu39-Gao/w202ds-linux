@@ -1,7 +1,7 @@
 # 当前 debug 内核
 
-debug 继承 desktop 的屏幕、键盘及正常交互基础，并保留原 `config/server.config`
-的调试和诊断设置。旧 LK framebuffer 诊断实现已删除；其余配置以历史 Server
+debug 继承 desktop 的屏幕、键盘及正常交互基础，并保留内核调试设置。
+旧 LK framebuffer 和 W202DS diagnostic recovery 已删除；其余配置以历史 Server
 经同一 Kconfig 规范化的结果为对照。当前仅生成和验证配置，没有重新编译或安装内核。
 
 ## 调试与诊断功能
@@ -13,12 +13,12 @@ debug 继承 desktop 的屏幕、键盘及正常交互基础，并保留原 `con
 | 查询完整配置 | `IKCONFIG=y`、`IKCONFIG_PROC=y`，支持从 Image 提取配置及 `/proc/config.gz`。 |
 | debugfs | `DEBUG_FS=y`，提供驱动与内核调试文件系统；具体节点由相应驱动提供。 |
 | SysRq | `MAGIC_SYSRQ=y`，含串口 SysRq 支持。 |
-| 电源调试 | `PM_DEBUG=y`、`PM_ADVANCED_DEBUG=y`；当前 `SUSPEND=n`，不是已支持休眠恢复的声明。 |
+| 电源调试 | `PM_DEBUG=y`、`PM_ADVANCED_DEBUG=y`；`SUSPEND=y` 提供系统挂起入口；具体睡眠模式和唤醒仍需平台验收。 |
 | 锁死检测 | 软锁死检测与 buddy 方式硬锁死检测；默认没有启用“检测到锁死就 panic”的开关。 |
 | 符号与栈信息 | `KALLSYMS=y`、`STACKTRACE=y`；没有 `KALLSYMS_ALL`。 |
 | 崩溃日志设施 | 共同层的 `PSTORE/CONSOLE/PMSG/RAM=y`；实际保存依赖匹配的后端和保留内存。 |
 | 内存基础检查 | Kconfig 默认的 `SLUB_DEBUG=y`、`DEBUG_MEMORY_INIT=y` 等；`SLUB_DEBUG_ON=n`，不会默认开启所有 SLUB 检查。 |
-| 诊断入口 | `CMDLINE_FORCE=y`，`rdinit=/w202diag`；需要配套诊断 initramfs。命令行 `panic=10` 覆盖编译默认 `PANIC_TIMEOUT=5`。 |
+| 启动入口 | 使用标准 initramfs `/init`；命令行不包含诊断入口参数。`panic=10` 覆盖编译默认 `PANIC_TIMEOUT=5`。 |
 
 当前未开启 ftrace/function tracer、Kprobes、KGDB、动态调试、DWARF 调试信息、lockdep/
 PROVE_LOCKING、KASAN/KCSAN/UBSAN。`DEBUG_KERNEL=y` 不代表这些功能都已启用。
@@ -27,7 +27,7 @@ PROVE_LOCKING、KASAN/KCSAN/UBSAN。`DEBUG_KERNEL=y` 不代表这些功能都已
 
 | 功能 | 选择 | 所属层 |
 | --- | --- | --- |
-| 早期屏幕日志 | `CONFIG_PJ4EDK_BOOT_DISPLAY=y` | debug 增量 |
+| 早期屏幕日志 | `CONFIG_PJ4EDK_BOOT_DISPLAY=y` | desktop 共同能力 |
 | PWM 背光控制 | `CONFIG_W202DS_BACKLIGHT=y` | 板级，共同能力 |
 | USB2 PHY 兼容 | `CONFIG_USB_W202DS_DUMMY_PHY=y` | 板级，共同能力 |
 | DRM/KMS 公共辅助能力 | `CONFIG_DRM_W202DS_BRINGUP_HELPERS=y` | 板级，共同能力；此项选择框架依赖，不是整条显示驱动 |

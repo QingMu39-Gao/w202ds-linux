@@ -1,0 +1,2 @@
+# DWC3 recreates its UDC when returning from host to device. Rebind ACM/NCM.
+ACTION=="add", SUBSYSTEM=="udc", KERNEL=="25100000.*", RUN+="/usr/bin/systemctl --no-block restart w202-usb-gadget.service"

@@ -19,16 +19,11 @@ diagnostics: $(addprefix $(OUT)/,$(CLIENTS))
 check: $(OUT)/native/w202-vpu-ranges-test
 	"$(OUT)/native/w202-vpu-ranges-test"
 
-# Stage scripts only; proprietary runtime inputs and service activation are explicit.
+# The removed Bionic worker service must never be installed again.
 install:
 	test -n "$(DESTDIR)" && test "$(DESTDIR)" != /
-	install -D -m 0755 rootfs/usr/libexec/w202-vpu "$(DESTDIR)/usr/libexec/w202-vpu"
-	install -D -m 0755 rootfs/usr/libexec/w202-vpu-start "$(DESTDIR)/usr/libexec/w202-vpu-start"
-	install -D -m 0755 rootfs/usr/libexec/w202-vpu-stop "$(DESTDIR)/usr/libexec/w202-vpu-stop"
-	install -D -m 0755 rootfs/usr/libexec/w202-vpu-worker-ns "$(DESTDIR)/usr/libexec/w202-vpu-worker-ns"
-	install -D -m 0644 rootfs/usr/lib/systemd/system/w202-vpu.service "$(DESTDIR)/usr/lib/systemd/system/w202-vpu.service"
-	install -d -m 0755 "$(DESTDIR)/usr/bin"
-	ln -sfn ../libexec/w202-vpu "$(DESTDIR)/usr/bin/w202-vpu"
+	install -d "$(DESTDIR)/etc/systemd/system"
+	ln -sfn /dev/null "$(DESTDIR)/etc/systemd/system/w202-vpu.service"
 
 $(OUT) $(OUT)/native:
 	mkdir -p "$@"

@@ -3,8 +3,8 @@
  * Register layout/calibration: stock sc27xx_fuel_gauge.c; see README.md.
  * Inherit the counter without resetting it. Only the Android RTC SOC banks
  * are written, after readback validation; no IRQ or charger policy changes.
- * The inherited Type-C/BC1.2 state also supplies standard USB source limits;
- * reading an Rp advertisement does not establish a USB PD contract.
+ * Live Type-C advertisements and fresh PHY-owned BC1.2 results supply
+ * standard USB source limits; neither establishes a USB PD contract.
  * ADC conversions and eFuse reads use the existing IIO/nvmem providers.
  */
 #include <linux/delay.h>
@@ -20,6 +20,7 @@
 #include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/unaligned.h>
+#include <linux/usb/phy.h>
 #include <linux/workqueue.h>
 #include "w202_fgu_soc.h"
 #include "w202_usb_source.h"
@@ -44,6 +45,7 @@ struct w202_power {
 	u32 base, resistance, full_uah, design_uah, energy_reference_uv;
 	u32 typec_base;
 	char *tcpm_supply_name;
+	struct usb_phy *usb_phy;
 	int voltage_gain, current_gain;
 	u32 *vt;
 	int vt_count;
@@ -338,12 +340,36 @@ static int w202_usb_get_property(struct power_supply *psy,
 	ret = regmap_read(p->regmap, 0x239c, &raw);
 	if (ret)
 		return ret;
+	/* The hardware may retain DONE/type after DP/DM was handed to USB.
+	 * Use only the PHY's current-attachment result to identify BC1.2.
+	 */
+	{
+		enum w202_usb_bc12_type detected = W202_BC12_UNKNOWN;
+
+		if (p->usb_phy && READ_ONCE(p->usb_phy->chg_state) == USB_CHARGER_PRESENT) {
+			switch (READ_ONCE(p->usb_phy->chg_type)) {
+			case SDP_TYPE: detected = W202_BC12_SDP; break;
+			case DCP_TYPE: detected = W202_BC12_DCP; break;
+			case CDP_TYPE: detected = W202_BC12_CDP; break;
+			default: break;
+			}
+		}
+		raw = w202_usb_fresh_bc12_status(raw, detected);
+	}
 	switch (property) {
 	case POWER_SUPPLY_PROP_SCOPE:
 		val->intval = POWER_SUPPLY_SCOPE_SYSTEM;
 		return 0;
 	case POWER_SUPPLY_PROP_ONLINE:
 		val->intval = !!(raw & BIT(2));
+		source = p->tcpm_supply_name ? power_supply_get_by_name(p->tcpm_supply_name) : NULL;
+		if (source) {
+			ret = power_supply_get_property(source, property, &online);
+			power_supply_put(source);
+			if (ret)
+				return ret;
+			val->intval = val->intval && online.intval > 0;
+		}
 		return 0;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
 		val->intval = 5000000;
@@ -361,12 +387,32 @@ static int w202_usb_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		return input_voltage_uv(p, &val->intval);
 	case POWER_SUPPLY_PROP_USB_TYPE:
-		val->intval = POWER_SUPPLY_USB_TYPE_C;
+		val->intval = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+		if (!(raw & BIT(2)))
+			return 0;
+		switch (w202_usb_bc12_type(raw)) {
+		case W202_BC12_SDP: val->intval = POWER_SUPPLY_USB_TYPE_SDP; break;
+		case W202_BC12_DCP: val->intval = POWER_SUPPLY_USB_TYPE_DCP; break;
+		case W202_BC12_CDP: val->intval = POWER_SUPPLY_USB_TYPE_CDP; break;
+		default: break;
+		}
 		source = p->tcpm_supply_name ? power_supply_get_by_name(p->tcpm_supply_name) : NULL;
 		if (source) {
-			ret = power_supply_get_property(source, property, val);
+			ret = power_supply_get_property(source, property, &usb_type);
+			if (!ret)
+				ret = power_supply_get_property(source, POWER_SUPPLY_PROP_ONLINE, &online);
 			power_supply_put(source);
-			return ret;
+			if (ret)
+				return ret;
+			/* PD takes precedence only for a live source. The ordinary
+			 * Type-C fallback must not hide a completed BC1.2 result.
+			 * PD_PPS describes capability; ONLINE=2 means active PPS.
+			 */
+			if (online.intval && (usb_type.intval == POWER_SUPPLY_USB_TYPE_PD ||
+			    usb_type.intval == POWER_SUPPLY_USB_TYPE_PD_PPS ||
+			    (val->intval == POWER_SUPPLY_USB_TYPE_UNKNOWN &&
+			     usb_type.intval == POWER_SUPPLY_USB_TYPE_C)))
+				val->intval = usb_type.intval;
 		}
 		return 0;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
@@ -427,7 +473,9 @@ static const struct power_supply_desc w202_usb_desc = {
 	.name = "w202-usb-c",
 	.type = POWER_SUPPLY_TYPE_USB,
 	/* TCPM reports source PPS capability even with a fixed-PDO contract. */
-	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_C) | BIT(POWER_SUPPLY_USB_TYPE_PD) |
+	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN) | BIT(POWER_SUPPLY_USB_TYPE_SDP) |
+		     BIT(POWER_SUPPLY_USB_TYPE_DCP) | BIT(POWER_SUPPLY_USB_TYPE_CDP) |
+		     BIT(POWER_SUPPLY_USB_TYPE_C) | BIT(POWER_SUPPLY_USB_TYPE_PD) |
 		     BIT(POWER_SUPPLY_USB_TYPE_PD_PPS),
 	.properties = w202_usb_properties,
 	.num_properties = ARRAY_SIZE(w202_usb_properties),
@@ -648,6 +696,11 @@ static int w202_power_probe(struct platform_device *pdev)
 	p->regmap = dev_get_regmap(dev->parent, NULL);
 	if (!p->regmap)
 		return -EPROBE_DEFER;
+	if (of_property_present(dev->of_node, "usb-phy")) {
+		p->usb_phy = devm_usb_get_phy_by_phandle(dev, "usb-phy", 0);
+		if (IS_ERR(p->usb_phy))
+			return dev_err_probe(dev, PTR_ERR(p->usb_phy), "USB input BC1.2 PHY\n");
+	}
 	ret = of_property_read_u32(dev->of_node, "reg", &p->base);
 	if (ret || p->base != 0x800)
 		return -EINVAL;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /* UMP9620 hardware adapter for the unmodified Linux TCPM state machine.
- * Sink-only, fixed PDO fallback and bounded PPS. No source or VCONN support.
+ * Dual-role USB, bounded sink PD/PPS and a guarded 5 V source regulator.
  */
 #include <linux/module.h>
 #include <linux/mfd/syscon.h>
@@ -8,7 +8,9 @@
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/property.h>
+#include <linux/regulator/consumer.h>
 #include <linux/slab.h>
+#include <linux/usb/phy.h>
 #include "controller.h"
 
 static bool activate = true;
@@ -30,59 +32,6 @@ MODULE_PARM_DESC(pps, "Allow PPS by default, up to source budget (3 A); requires
 static unsigned int pps_max_mv = 9800;
 module_param(pps_max_mv, uint, 0444);
 MODULE_PARM_DESC(pps_max_mv, "PPS board ceiling: 9000, validated 9800 (default), or experimental 11000 mV; needs prepared charger OVP");
-
-/* The stock connector advertises DRP/PPS before those paths are implemented.
- * Give TCPM an honest board capability without rewriting the running DT.
- */
-static const u32 sink_pdos[] = {
-	PDO_FIXED(5000, 3000, PDO_FIXED_USB_COMM),
-};
-static const struct property_entry connector_properties[] = {
-	PROPERTY_ENTRY_STRING("power-role", "sink"),
-	PROPERTY_ENTRY_STRING("data-role", "device"),
-	PROPERTY_ENTRY_BOOL("self-powered"),
-	PROPERTY_ENTRY_U32_ARRAY("sink-pdos", sink_pdos),
-	PROPERTY_ENTRY_U32("op-sink-microwatt", 10000000),
-	{ }
-};
-
-static struct fwnode_handle *create_connector(void)
-{
-	u32 pdos[] = {
-		PDO_FIXED(5000, 3000, PDO_FIXED_USB_COMM),
-		PDO_FIXED(target_mv, min(3000U, 18000000 / target_mv), 0),
-	};
-	struct property_entry properties[] = {
-		PROPERTY_ENTRY_STRING("power-role", "sink"),
-		PROPERTY_ENTRY_STRING("data-role", "device"),
-		PROPERTY_ENTRY_BOOL("self-powered"),
-		PROPERTY_ENTRY_U32_ARRAY("sink-pdos", pdos),
-		PROPERTY_ENTRY_U32("op-sink-microwatt", 7500000),
-		{ }
-	};
-
-	return fwnode_create_software_node(target_mv == 5000 ?
-		connector_properties : properties, NULL);
-}
-
-static struct fwnode_handle *create_pps_connector(void)
-{
-	u32 pdos[] = {
-		PDO_FIXED(5000, 3000, PDO_FIXED_USB_COMM),
-		PDO_FIXED(9000, 2000, 0),
-		PDO_PPS_APDO(5000, pps_max_mv, 3000),
-	};
-	struct property_entry properties[] = {
-		PROPERTY_ENTRY_STRING("power-role", "sink"),
-		PROPERTY_ENTRY_STRING("data-role", "device"),
-		PROPERTY_ENTRY_BOOL("self-powered"),
-		PROPERTY_ENTRY_U32_ARRAY("sink-pdos", pdos),
-		PROPERTY_ENTRY_U32("op-sink-microwatt", 7500000),
-		{ }
-	};
-
-	return fwnode_create_software_node(properties, NULL);
-}
 
 static int check_charger_input(unsigned int required_mv)
 {
@@ -136,90 +85,17 @@ static int get_vbus(struct tcpc_dev *tcpc)
 	return ret ? ret : !!(value & SC27XX_TYPEC_VBUS_OK);
 }
 
-static int get_current_limit(struct tcpc_dev *tcpc)
-{
-	/* TCPM calls this for default Rp. Without the callback it reports
-	 * zero input budget after PD negotiation fails, suppressing even the
-	 * board's existing conservative 500 mA USB fallback. Never use BC1.2
-	 * or a previous high-power contract to increase this default.
-	 */
-	return get_vbus(tcpc) > 0 ? 500 : 0;
-}
-
-static int get_cc(struct tcpc_dev *tcpc, enum typec_cc_status *cc1,
-		  enum typec_cc_status *cc2)
-{
-	struct w202_typec *pd = tcpc_to_w202(tcpc);
-	enum typec_cc_status rp;
-	u32 value;
-	int ret = regmap_read(pd->regmap, pd->typec_base + SC27XX_TYPEC_STATUS, &value);
-
-	*cc1 = TYPEC_CC_OPEN;
-	*cc2 = TYPEC_CC_OPEN;
-	if (ret || (value & SC27XX_STATE_MASK) != 2)
-		return ret;
-	switch (SC27XX_TYPEC_VBUS_CL(value)) {
-	case 0: rp = TYPEC_CC_RP_DEF; break;
-	case 1: rp = TYPEC_CC_RP_1_5; break;
-	case 2: rp = TYPEC_CC_RP_3_0; break;
-	default: return 0;
-	}
-	if (value & SC27XX_TYPEC_FINAL_SWITCH)
-		*cc1 = rp;
-	else
-		*cc2 = rp;
-	return 0;
-}
-
-static int set_cc(struct tcpc_dev *tcpc, enum typec_cc_status cc)
-{
-	struct w202_typec *pd = tcpc_to_w202(tcpc);
-	u32 force;
-	int ret;
-
-	if (cc != TYPEC_CC_OPEN && cc != TYPEC_CC_RD)
-		return -EOPNOTSUPP;
-	/* OPEN is a real electrical disconnect. RD returns both switches to
-	 * the hardware sink detector so that its status and IRQs remain valid.
-	 */
-	force = cc == TYPEC_CC_OPEN ? BIT(12) | BIT(14) : 0;
-	mutex_lock(&pd->lock);
-	if (pd->faulted) {
-		mutex_unlock(&pd->lock);
-		return -ESHUTDOWN;
-	}
-	ret = regmap_update_bits(pd->regmap, pd->typec_base + SC27XX_TYPEC_MODE,
-				GENMASK(1, 0) | SC27XX_TYPEC_TRY_SRC_EN |
-				SC27XX_TYPEC_TRY_SINK_EN, 0);
-	if (!ret)
-		ret = regmap_update_bits(pd->regmap, pd->typec_base + SC27XX_TYPEC_SW_CFG,
-					GENMASK(15, 12), force);
-	mutex_unlock(&pd->lock);
-	/* Loading with a cable already attached does not generate a new edge.
-	 * Re-evaluate CC after TCPM changes detector mode, including the end
-	 * of its initial PORT_RESET_WAIT_OFF state. This is an event, no timer.
-	 */
-	if (!ret && READ_ONCE(pd->ready))
-		tcpm_cc_change(pd->port);
-	return ret;
-}
-
 static int set_polarity(struct tcpc_dev *tcpc, enum typec_cc_polarity polarity)
 {
+	struct w202_typec *pd = tcpc_to_w202(tcpc);
+
+	pd->polarity = polarity;
 	/* The Type-C detector selects the PHY CC line in hardware. */
 	return 0;
 }
 
 static int set_vconn(struct tcpc_dev *tcpc, bool on)
 {
-	return on ? -EOPNOTSUPP : 0;
-}
-
-static int set_vbus(struct tcpc_dev *tcpc, bool on, bool charge)
-{
-	/* Sink path is inherited; battery charging is owned by power_supply.
-	 * Never enable the stock OTG regulator or pretend to source VBUS.
-	 */
 	return on ? -EOPNOTSUPP : 0;
 }
 
@@ -234,34 +110,6 @@ static int set_current_limit(struct tcpc_dev *tcpc, u32 ma, u32 mv)
 	dev_dbg(pd->dev, "TCPM sink limit %u mV %u mA\n", mv, ma);
 	notify_supplies();
 	return 0;
-}
-
-static int set_roles(struct tcpc_dev *tcpc, bool attached,
-		     enum typec_role power, enum typec_data_role data)
-{
-	struct w202_typec *pd = tcpc_to_w202(tcpc);
-	u32 bits = data == TYPEC_HOST ? SC27XX_PD_DATA_ROLE : 0;
-	int ret;
-
-	if (attached && (power != TYPEC_SINK || data != TYPEC_DEVICE))
-		return -EOPNOTSUPP;
-	mutex_lock(&pd->lock);
-	if (pd->faulted) {
-		mutex_unlock(&pd->lock);
-		return -ESHUTDOWN;
-	}
-	ret = regmap_update_bits(pd->regmap, pd->base + SC27XX_PD_CFG0,
-				SC27XX_PD_SRC_SINK_MODE, 0);
-	if (!ret)
-		ret = regmap_update_bits(pd->regmap, pd->base + SC27XX_PD_HEAD_CFG,
-					SC27XX_PD_POWER_ROLE | SC27XX_PD_DATA_ROLE, bits);
-	if (!ret && !attached)
-		ret = regmap_update_bits(pd->regmap, pd->typec_base + SC27XX_TYPEC_PD_CFG,
-					SC27XX_TYPEC_PD_CONSTRACT, 0);
-	if (!attached)
-		pd->nr_source_caps = 0;
-	mutex_unlock(&pd->lock);
-	return ret;
 }
 
 static int tcpc_init(struct tcpc_dev *tcpc)
@@ -388,11 +236,23 @@ static void stop_controller(struct w202_typec *pd)
 	WRITE_ONCE(pd->ready, false);
 	disable_irq(pd->pd_irq);
 	disable_irq(pd->typec_irq);
+	cancel_delayed_work_sync(&pd->vbus_work);
 	w202_typec_supply_unregister(pd);
 	tcpm_unregister_port(pd->port);
-	fwnode_remove_software_node(pd->tcpc.fwnode);
+	w202_typec_charger_state(pd, false);
+	w202_typec_connector_remove(pd);
+	w202_typec_set_vbus(&pd->tcpc, false, false);
 	w202_typec_restore(pd);
 	pd->active = false;
+}
+
+static int source_event(struct notifier_block *nb, unsigned long event, void *data)
+{
+	struct w202_typec *pd = container_of(nb, struct w202_typec, vbus_nb);
+
+	if ((event & REGULATOR_EVENT_FAIL) && READ_ONCE(pd->ready))
+		tcpm_tcpc_reset(pd->port);
+	return NOTIFY_OK;
 }
 
 static int probe(struct platform_device *pdev)
@@ -418,13 +278,21 @@ static int probe(struct platform_device *pdev)
 	pd->regmap = dev_get_regmap(dev->parent, NULL);
 	if (!pd->regmap)
 		return -EPROBE_DEFER;
-	if (of_property_read_bool(dev->of_node, "sprd,syscon-aon-apb")) {
+	if (of_property_present(dev->of_node, "sprd,syscon-aon-apb")) {
 		pd->aon_apb = syscon_regmap_lookup_by_phandle(dev->of_node,
 							 "sprd,syscon-aon-apb");
 		if (IS_ERR(pd->aon_apb))
 			return PTR_ERR(pd->aon_apb);
 	}
 	mutex_init(&pd->lock);
+	w202_typec_vbus_init(pd);
+	if (of_property_present(dev->of_node, "usb-phy")) {
+		pd->usb_phy = devm_usb_get_phy_by_phandle(dev, "usb-phy", 0);
+		if (IS_ERR(pd->usb_phy))
+			return dev_err_probe(dev, PTR_ERR(pd->usb_phy), "BC1.2 USB PHY\n");
+		if (!pd->usb_phy->charger_detect)
+			dev_warn(dev, "USB PHY has no BC1.2 detector; default Rp stays at 500 mA\n");
+	}
 	platform_set_drvdata(pdev, pd);
 	ret = of_property_read_u32_index(dev->of_node, "reg", 0, &pd->base);
 	if (!ret)
@@ -436,6 +304,15 @@ static int probe(struct platform_device *pdev)
 		return -EINVAL;
 	ret = w202_typec_snapshot(pd);
 	if (ret || !activate)
+		goto put_node;
+	pd->vbus = devm_regulator_get(dev, "vbus");
+	if (IS_ERR(pd->vbus)) {
+		ret = dev_err_probe(dev, PTR_ERR(pd->vbus), "OTG VBUS regulator\n");
+		goto put_node;
+	}
+	pd->vbus_nb.notifier_call = source_event;
+	ret = devm_regulator_register_notifier(pd->vbus, &pd->vbus_nb);
+	if (ret)
 		goto put_node;
 	ret = check_charger_input(pd->max_mv);
 	if (ret) {
@@ -452,18 +329,17 @@ static int probe(struct platform_device *pdev)
 	if (ret)
 		goto restore;
 	pd->tcpc = (struct tcpc_dev) {
-		.init = tcpc_init, .get_vbus = get_vbus, .get_cc = get_cc,
-		.get_current_limit = get_current_limit,
-		.set_cc = set_cc, .set_polarity = set_polarity,
-		.set_vconn = set_vconn, .set_vbus = set_vbus,
-		.set_current_limit = set_current_limit, .set_roles = set_roles,
+		.init = tcpc_init, .get_vbus = get_vbus, .get_cc = w202_typec_get_cc,
+		.get_current_limit = w202_typec_charger_current,
+		.set_cc = w202_typec_set_cc, .set_polarity = set_polarity,
+		.start_toggling = w202_typec_start_toggling,
+		.set_vconn = set_vconn, .set_vbus = w202_typec_set_vbus,
+		.set_current_limit = set_current_limit, .set_roles = w202_typec_set_roles,
 		.set_pd_rx = w202_pd_set_rx, .pd_transmit = w202_pd_transmit,
 	};
-	pd->tcpc.fwnode = pps ? create_pps_connector() : create_connector();
-	if (IS_ERR(pd->tcpc.fwnode)) {
-		ret = PTR_ERR(pd->tcpc.fwnode);
+	ret = w202_typec_connector_create(pd, target_mv, pps_max_mv, pps);
+	if (ret)
 		goto restore;
-	}
 	ret = devm_request_threaded_irq(dev, pd->pd_irq, NULL, w202_pd_irq,
 					IRQF_ONESHOT | IRQF_NO_AUTOEN, "w202-ump9620-pd", pd);
 	if (!ret)
@@ -483,16 +359,17 @@ static int probe(struct platform_device *pdev)
 	}
 	pd->active = true;
 	WRITE_ONCE(pd->ready, true);
+	mod_delayed_work(system_power_efficient_wq, &pd->vbus_work, 0);
 	enable_irq(pd->pd_irq);
 	enable_irq(pd->typec_irq);
 	tcpm_cc_change(pd->port);
 	tcpm_vbus_change(pd->port);
-	dev_info(dev, "Linux TCPM active: sink, fixed PDO target %u mV, bounded PPS %s\n",
+	dev_info(dev, "Linux TCPM active: dual role, source 5 V/500 mA, sink target %u mV, PPS %s\n",
 		 target_mv, pps ? "allowed" : "off");
 	ret = 0;
 	goto put_node;
 remove_node:
-	fwnode_remove_software_node(pd->tcpc.fwnode);
+	w202_typec_connector_remove(pd);
 restore:
 	w202_typec_restore(pd);
 put_node:

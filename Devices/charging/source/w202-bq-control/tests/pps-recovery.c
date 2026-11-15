@@ -24,8 +24,9 @@ struct i2c_client { int dev; };
 struct w202_bq {
     struct i2c_client *client;
     struct mutex lock;
-    bool slave, stop_requested, suspended, shutting_down, thermal_blocked, fault_latched;
+    bool otg_active, otg_saved_valid, slave, stop_requested, suspended, shutting_down, thermal_blocked, fault_latched;
     bool auto_pps, pps_blocked, pps_exit_pending;
+    bool fast_charge_disabled;
     int health, max_input_uv;
     const char *pps_supply;
     unsigned long pps_next_refresh;
@@ -109,6 +110,18 @@ static void reset(void)
 int main(void)
 {
     int i, previous;
+    reset(); bq.otg_active = true;
+    assert(step(0) == 0 && writes == 0);
+    puts("PASS: source mode never drives a sink PPS negotiation");
+
+    reset(); bq.fast_charge_disabled = true;
+    assert(step(0) == 0 && online == 1 && !bq.stop_requested);
+    previous = writes;
+    for (i = 0; i < 10; i++) assert(step(2000) == 0 && online == 1);
+    assert(writes == previous && !bq.stop_requested);
+    bq.fast_charge_disabled = false;
+    assert(step(2000) == 0 && online == 2);
+    puts("PASS: fast-charge permission exits PPS without inhibiting ordinary charging");
     reset();
     bq.health=0; busy_exits=1;
     assert(step(0)==-EAGAIN && bq.pps_exit_pending && writes==1);

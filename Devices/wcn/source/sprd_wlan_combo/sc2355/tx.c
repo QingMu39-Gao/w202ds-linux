@@ -715,7 +715,7 @@ static void tx_work_queue(struct tx_mgmt *tx_mgmt)
 	}
 
 	if (hif->fw_awake == 0) {
-		printk_ratelimited("sc2355, %s, fw_awake = 0\n", __func__);
+		pr_info_ratelimited("sc2355, %s, fw_awake = 0\n", __func__);
 		return;
 	}
 

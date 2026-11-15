@@ -95,7 +95,7 @@ void adjust_max_fw_tx_dscr(char *buf, unsigned char offset)
 		}
 	}
 	max_fw_tx_dscr = value;
-	pr_err("%s, change max_fw_tx_dscr to %d\n", __func__, value);
+	pr_info("%s, change max_fw_tx_dscr to %d\n", __func__, value);
 }
 EXPORT_SYMBOL(adjust_max_fw_tx_dscr);
 #ifdef CONFIG_SPRD_WLAN_DEBUG

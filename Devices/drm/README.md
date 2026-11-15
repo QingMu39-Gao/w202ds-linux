@@ -8,6 +8,8 @@ drm/
 └── source/
 ```
 
+用户态程序、服务模板和诊断见 [userspace](userspace/README.md)。
+
 | 功能 | 可用性 | 问题描述 |
 | --- | --- | --- |
 | 内屏显示与登录 | Server 已验证，KDE 已启动 | KDE 标准版已进入 SDDM／桌面；开合后的显示恢复仍待修复。 |

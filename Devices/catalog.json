@@ -1,0 +1,120 @@
+{
+  "schema": 1,
+  "board": "W202DS / P720P01 / UMS9620",
+  "phase": "server-hardware-adaptation-20261102",
+  "device_modified": true,
+  "devices": [
+    {
+      "id": "audio",
+      "title": "扬声器、麦克风与音频链路",
+      "manifest": "audio/device.json",
+      "status": "有 AW883xx_new 功放和 SPRD PCM 参考；VBC/codec/用户态完整链路待提取"
+    },
+    {
+      "id": "drm",
+      "title": "内置显示、背光亮度与屏幕偏压",
+      "manifest": "drm/device.json",
+      "status": "Linux内屏/背光有历史验证，Server 10秒无变化息屏已验；偏压参考与EFI性能另验"
+    },
+    {
+      "id": "gpu",
+      "title": "GPU",
+      "manifest": "gpu/device.json",
+      "status": "Server Mali-G57/Panfrost 100 帧着色器及 409600 像素回读通过；长时稳定性待验"
+    },
+    {
+      "id": "keyboard",
+      "title": "键盘与触控板",
+      "manifest": "keyboard/device.json",
+      "status": "2026-10-26 RAM rootfs/Weston 键盘与触控板实物通过；Fn/全部修饰键、Caps LED及新Server/KDE启动待验"
+    },
+    {
+      "id": "touchscreen",
+      "title": "HX83102J 触屏",
+      "manifest": "touchscreen/device.json",
+      "status": "已有移植及历史输入验证"
+    },
+    {
+      "id": "wcn",
+      "title": "WCN：Wi-Fi、蓝牙、GNSS",
+      "manifest": "wcn/device.json",
+      "status": "Server STA/AP、DHCP/DNS 与 AP 蜂窝 IPv4 共享已验；AP+STA 关联失败，BT/GNSS 待适配"
+    },
+    {
+      "id": "usb3",
+      "title": "USB 3.x、OTG、Type-C/PD、视频输出和 USB 以太网",
+      "manifest": "usb3/device.json",
+      "status": "USB ACM/NCM 有历史验证；OTG、DP 输出、以太网/Wi-Fi 共存未闭环"
+    },
+    {
+      "id": "charging",
+      "title": "充电控制与外接供电通路",
+      "manifest": "charging/device.json",
+      "status": "主从 UPM6910H 已识别并保持停充；CPU/GPU/VPU 负载下外电供系统已测，物理隔离未验"
+    },
+    {
+      "id": "pmic",
+      "title": "UMP9620 PMIC：电量计、ADC、音频 codec",
+      "manifest": "pmic/device.json",
+      "status": "Server FGU/NTC/USB电压/库仑与估算SOC已验；马达未在Linux验收，呼吸灯未获用户可见点亮确认"
+    },
+    {
+      "id": "modem",
+      "title": "蜂窝基带",
+      "manifest": "modem/device.json",
+      "status": "原厂固件/私有NV自动启动；两次新Linux启动约13.2秒拨起CID1，蜂窝DNS/HTTPS200及14项进程锁测试通过；IPv6/长时运行未验",
+      "common_delivery": "m23-server-modem-20261103-v5:14模块/29代码文件及离线私有准备；新rootfs启动未验"
+    },
+    {
+      "id": "vpu",
+      "title": "视频编解码 VPU",
+      "manifest": "vpu/device.json",
+      "status": "Server H264命令已安装；450帧含1080p/裁剪/B帧逐帧匹配，空闲断电与取消/卸载已验；V4L2/编码/其他格式未完成"
+    },
+    {
+      "id": "sensorhub",
+      "title": "CH Sensor Hub：IMU、磁力计与光线",
+      "manifest": "sensorhub/device.json",
+      "status": "Server已查询固件20250605/四传感器身份，时钟同步后四类数据流通过；三颗器件10个IIO直接读取通道热加载/卸载通过，动作/光照/校准待验"
+    },
+    {
+      "id": "thermal",
+      "title": "温度传感器与温控",
+      "manifest": "thermal/device.json",
+      "status": "有 SoC thermal_r5p0、UMP9622 tsensor 证据与源码；完整策略待验"
+    },
+    {
+      "id": "hall",
+      "title": "霍尔传感器",
+      "manifest": "hall/device.json",
+      "status": "Linux Server 实物开合已验：11次 SW_LID 切换与IRQ11一致；模块及Server自启已安装"
+    },
+    {
+      "id": "camera",
+      "title": "前后两个摄像头",
+      "manifest": "camera/device.json",
+      "status": "原厂报告 GC13A0 13M 和 SC520CS 5M；前后映射与核心源码待确认"
+    },
+    {
+      "id": "flash",
+      "title": "摄像头闪光灯 / 手电筒",
+      "manifest": "flash/device.json",
+      "status": "本机 DT 指向 sprd,flash-aw36518a_gpio；有原厂模块，核心源码尚未找到"
+    },
+    {
+      "id": "serial",
+      "title": "串口",
+      "manifest": "serial/device.json",
+      "status": "已有诊断代码，Linux USB ACM 有历史实测"
+    }
+  ],
+  "dependency_semantics": "device.json.dependencies lists hardware integration relationships, not a build graph or module load order",
+  "documentation_revision": {
+    "date": "2026-11-04",
+    "id": "sensorhub-consolidation-r63",
+    "device_modified_by_documentation_update": false,
+    "historical_field_semantics": "phase, device_modified and runtime_verified_this_task retain earlier hardware-task meaning; this organization operation did not access a device",
+    "layout": "one shared access device per top-level directory; sensorhub components in device.json/README and implementation under source",
+    "device_tree_mapping": "DEVICETREE.md"
+  }
+}

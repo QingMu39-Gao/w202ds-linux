@@ -12,7 +12,7 @@ keyboard/
 用户态程序、服务模板和诊断见 [userspace](userspace/README.md)。
 
 键盘套拆下时 `W202DS Tablet Mode` 上报 `EV_SW/SW_TABLET_MODE=1`，接回上报 0；
-桌面通过标准 input 接口消费状态。KDE 虚拟键盘与旋转等行为由 REIMUKS 定义。
+桌面通过标准 input 接口消费状态。KDE 虚拟键盘与旋转等行为由 发行版集成层 定义。
 
 | 功能 | 可用性 | 问题描述 |
 | --- | --- | --- |

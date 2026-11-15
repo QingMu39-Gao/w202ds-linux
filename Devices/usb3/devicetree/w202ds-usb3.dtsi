@@ -108,8 +108,16 @@
 					usb-pam = <0x66>;
 					phy_type = "utmi";
 					usb-role-switch;
+					role-switch-default-mode = "peripheral";
+					dr_mode = "otg";
+
 					linux,sysdev_is_parent;
 					snps,usb2-gadget-lpm-disable;
+					port {
+						w202_dwc3_usb_role: endpoint {
+							remote-endpoint = <&w202_pd_usb_role>;
+						};
+					};
 				};
 			};
 			pamu3@25210000 {

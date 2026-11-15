@@ -33,7 +33,7 @@ make -C Devices KERNEL_OUT="$PWD/output/kernel-debug-imported" \
 只改外置模块自己的源码可以正常增量构建；改内建驱动、配置或内核源码应选择新内核输出。
 
 每个目标输出自己的模块、`Module.symvers`、`build.log` 和 `build.json`；提供者按实际符号依赖先构建。
-`all` 包含当前 Server 模块及已验证的 Linux 基带启动准备。诊断、历史触控为显式目标。
+`all` 包含常规硬件模块及 Linux 基带启动准备。诊断、历史触控为显式目标。
 目标能独立编译不代表它能独立运行；例如 SIPC、Trusty、WCN 共享硬件状态，不能据此随意热卸载。
 
 完整新内核先构建 `Image modules`，使用全局 `Module.symvers`，无需额外 provider。
@@ -53,6 +53,6 @@ make -C Devices \
 
 
 额外的独立测试目标：`w202ds-drm-backlight`、`w202ds-usb3-legacy-phy`。
-二者在当前 Server 内核内建；独立 `.ko` 用于验证模块模式，不能在同一内建实现上重复加载。
+二者在默认内核配置中内建；独立 `.ko` 用于验证模块模式，不能在同一内建实现上重复加载。
 只有 DTSI 的硬件目录暂不注册空模块目标，构建进度以各目录 README 为准。
 `w202ds-wcn-driver` 包含 `w202ds-wcn-wifi` 与 `w202ds-wcn-bluetooth`（`sprdbt_tty.ko`），二者均以 `w202ds-wcn-bus` 为符号提供者；蓝牙用户态在 `wcn/userspace/` 以 `make` 单独构建。

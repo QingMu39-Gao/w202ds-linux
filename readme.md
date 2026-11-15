@@ -1,51 +1,26 @@
 # W202DS Linux 6.18.35
 
-W202DS Linux 6.18.35 内核、板级设备树及硬件模块源码。
-本仓范围为 Linux，不包含 U-Boot、EDK2/UEFI 或 LK 工程及刷写包。
+W202DS 的 Linux 内核、设备树、板级驱动和用户态适配。启动固件由独立 boot 工程提供，发行版由 REIMUKS 组装。
 
-本 Git 仓库根目录为 `pushup/w202ds-linux/6.18.35/`，工作分支为 `6.18.35`。
-
-## 目录结构
-
-```text
-6.18.35/                  # Git 根目录，分支 6.18.35
-├── .gitmodules
-├── kernel/               # Linux stable 子模块，W202DS 本地分支
-├── devicetree/
-├── Devices/
-├── config/
-└── integration/
-```
-
-| 目录 | 用途 |
+| 目录 | 内容 |
 | --- | --- |
-| `kernel/` | 基于官方 v6.18.35 的内核子模块和 W202DS 适配提交。 |
-| `devicetree/` | W202DS 设备树源码及相关文件。 |
-| `Devices/` | 18 组硬件归属，含模块源码、DTSI、构建入口及实现/待办说明。 |
-| `config/` | desktop/debug 内核配置合成模型及历史 Server 配置对照，默认 debug。 |
+| `kernel/` | Linux stable 子模块及 W202DS 内核适配。 |
+| `Devices/` | 按硬件维护驱动、共享接口头、DTSI、固件输入和用户态配套。 |
+| `devicetree/` | 板级设备树入口。 |
+| `config/` | desktop/debug 内核配置模型及片段。 |
+| `scripts/` | 内核及模块的构建、导入和导出工具。 |
 
-已导入 2026-11-05 Server 使用的 `6.18.35-w202ds-m23-wifi` 源码及对应模块。
-包含 DRM、GPU、VPU、WCN/Wi-Fi、基带、PMIC、充电、霍尔、键盘、Sensor Hub 和历史 Linux 触控实现。
-各项实际完成度见 [设备清单](Devices/README.md)，构建见 [BUILD.md](BUILD.md)。
+构建见 [BUILD.md](BUILD.md)，用户态布局和安装见 [Devices/USERSPACE.md](Devices/USERSPACE.md)，硬件实现及验收范围见 [Devices/README.md](Devices/README.md)。
 
-各硬件目前发布 `devicetree/`、`README.md`、`source/`、`firmware/` 和 `build.mk`。
-`device.json`、`reference/`、模块编译产物、`userspace/` 和 `SOURCES*.json` 保留在本地。
-GPU 源码目前只发布已在 W202DS 上验证的 `Devices/gpu/source/panfrost/`。
-设备 NV、账号密钥和完整系统 rootfs 不纳入公共源码。
-Linux 树内通用 EFI 支持属于内核，正常保留。快充、Vulkan、蓝牙、KDE 等未验收能力不列为已完成。
+每个硬件目录用 `source/` 维护内核实现，用 `userspace/` 维护用户态程序、库适配和服务。基础 systemd 单元放在组件的 `userspace/rootfs/usr/lib/systemd/system/`，脚本放在 `userspace/rootfs/usr/libexec/`。构建只暂存文件，发行版负责依赖安装、配置覆盖和服务启用。
 
-已进行板级源码分离：实现归 `Devices/`，内核保留功能位置接入；硬件 DTSI 也随设备维护。
-已取得的硬件固件放对应设备的 `firmware/`。
+源码、构建入口、服务模板及测试随仓库发布。编译输出、第三方实验检出缓存、设备私有 NV、账号和完整 rootfs 不进入源码交付。GPU/PanVK 和 VPU 的第三方实验范围见各组件说明，不能将源码已就位视为硬件验收通过。
 
-2026-11-05 完整构建及 Server 上机已完成：378 件树内模块、50 件独立外部模块均编译通过，运行内核 Build ID 与新产物匹配。GPU、VPU、蜂窝数据和键盘/霍尔的验证范围见 [设备清单](Devices/README.md) 中对应硬件说明。KDE 尚未启动验收。
-
-`Devices/` 下 18 个目录已简化为硬件名称；模块名和构建目标保留原名。`config/server.config` 的下一次构建名称改为 `6.18.35-w202ds`，当前真机仍运行已验证的 `6.18.35-w202ds-m23-wifi`，未因改名再次刷写。
-
-旧 `w202ds-research/bsp/Devices` 指向本版本的 `Devices/`；旧 `bsp/kernel` 指向本版本的 `integration/kernel/`，保留 initramfs、兼容配置、构建记录和交付包入口。实际 Linux 源码始终在本版本 `kernel/`，不混入集成脚本。
+构建输出统一放在仓库级 `output/` 或显式指定的外部目录；不在设备源码目录生成模块包、运行证据或 `SOURCES*.json`。历史集成包和研究资料独立保存。
 
 ## 内核 Git
 
-`kernel/` 保留官方 Linux stable `v6.18.35` 基线，适配在独立分支提交；主仓库仅用 submodule 固定该提交。查看差异：
+`kernel/` 基于官方 `v6.18.35`，主仓库用子模块固定适配提交；内核版本沿用 Kbuild 的 Git 提交标识。查看适配差异：
 
 ```sh
 git -C kernel diff --stat v6.18.35..HEAD
@@ -53,5 +28,12 @@ git -C kernel log --oneline v6.18.35..HEAD
 git submodule status kernel
 ```
 
-子模块初始化、当前提交和备用恢复方式见 [内核 Git 说明](KERNEL-GIT.md)。
-设备组件按已确认内容在主仓库分批提交，实际入库范围以 `git ls-files Devices/` 为准。
+初始化和恢复方式见 [KERNEL-GIT.md](KERNEL-GIT.md)。复制工程时保留 `kernel/` 与 `Devices/` 的相对位置及内部链接。
+
+## 当前板级集成状态
+
+`Devices/` 同时维护板级内核模块和各设备的 `userspace/` 实现；发行版桌面策略由消费工程定义。当前改动包括 GPU DVFS、Type-C/充电/OTG、显示与触控旋转、霍尔标准输入、基带有序初始化，以及原生 V4L2 Request 和 VA-API 构建接入。旧 Android VPU worker 已移除并禁用；基带所需的独立运行环境不属于该删除范围。
+
+桌面配置启用挂起基础能力、启动标志和 printk 时间；配置存在不保证设备能可靠休眠或出现企鹅。基带完整注册、浏览器硬件视频和显示边界仍需配套系统实机验收。当前 DRM 最小 framebuffer 宽高仍为 1200，会拒绝宽度 64 的小缓冲区；这是已定位、尚未修复的问题，不能把本提交作为该问题的修复。
+
+可复现构建应固定内核子模块、公共显示协议子模块、工具链版本、配置片段和 Kbuild 构建身份；按 `BUILD.md` 从固定 `output/` 入口生成。比较 Image、DTB、模块内容及运行包清单，不混用不同内核 release 的模块。测试源码和文档包含在本仓库，构建输出不提交。

@@ -4175,11 +4175,24 @@ unsigned short sc2355_rx_rsp_process(struct sprd_priv *priv, u8 *msg)
 		pr_debug("ctx_id %d recv rsp[%s]\n",
 			hdr->common.mode, cmdevt_cmd2str(hdr->cmd_id));
 		if (unlikely(hdr->status != 0)) {
-			pr_err("%s ctx_id %d recv rsp[%s] status[%s]\n",
-			       __func__, hdr->common.mode,
-			       cmdevt_cmd2str(hdr->cmd_id), cmdevt_err2str(hdr->status));
 			handle_flag = cmdevt_handle_rsp_status_err(hdr->cmd_id,
 								   hdr->status);
+			/* This firmware declines some configuration/scan options.
+			 * Keep their rejected status in the journal as warnings; do
+			 * not change completion, return values or fatal INI handling.
+			 */
+			if ((hdr->cmd_id == CMD_POWER_SAVE &&
+			     hdr->status == SPRD_CMD_STATUS_ARG_ERROR) ||
+			    (hdr->cmd_id == CMD_RND_MAC &&
+			     hdr->status == SPRD_CMD_STATUS_EXEC_ERROR))
+				pr_warn_ratelimited("%s ctx_id %d configuration rsp[%s] status[%s]\n",
+					__func__, hdr->common.mode,
+					cmdevt_cmd2str(hdr->cmd_id), cmdevt_err2str(hdr->status));
+			else
+				pr_err("%s ctx_id %d recv rsp[%s] status[%s] (%d)\n",
+					__func__, hdr->common.mode,
+					cmdevt_cmd2str(hdr->cmd_id), cmdevt_err2str(hdr->status),
+					hdr->status);
 			if (hdr->cmd_id == CMD_TX_MGMT) {
 				pr_err("tx mgmt status : %d\n", hdr->status);
 				priv->tx_mgmt_status = hdr->status;

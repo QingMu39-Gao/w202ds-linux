@@ -12,6 +12,7 @@
 #include <linux/dma-buf.h>
 #include <linux/interrupt.h>
 #include <linux/ktime.h>
+#include <linux/log2.h>
 #include <linux/io.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
@@ -21,6 +22,7 @@
 #include <linux/regmap.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_blend.h>
 #include <drm/drm_connector.h>
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_fbdev_dma.h>
@@ -38,6 +40,7 @@
 #include <drm/drm_simple_kms_helper.h>
 #include <drm/drm_vblank.h>
 #include "w202_r6p0.h"
+#include "w202_rotation.h"
 
 #define CTRL 0x08
 #define LAYER_ENABLE 0x2c
@@ -50,6 +53,13 @@
 #define W202_ERROR_IRQS (BIT(2) | BIT(6) | BIT(7) | BIT(8))
 static bool flip_after_latch = true;
 static bool defer_modeset = true;
+/* Board installation correction, clockwise in input coordinates. Logical
+ * KMS coordinates are already landscape; userspace rotation starts at zero.
+ * r6p0's clockwise source rotation is the inverse of this input correction.
+ */
+static unsigned int mount_rotation = 270;
+module_param(mount_rotation, uint, 0444);
+MODULE_PARM_DESC(mount_rotation, "Board input mounting correction (90 or 270; default 270)");
 module_param(defer_modeset, bool, 0444);
 MODULE_PARM_DESC(defer_modeset, "Register KMS resources now, activate panel/fbdev only after display_enable=1");
 module_param(flip_after_latch, bool, 0644);
@@ -303,26 +313,51 @@ static bool w202_latch(struct w202_dpu *d)
 	}
 	return done;
 }
-static enum drm_mode_status w202_mode_valid(struct drm_simple_display_pipe *pipe,
-					 const struct drm_display_mode *mode)
+/* Expose the installed panel rectangle without changing electrical timings. */
+static void w202_logical_mode(struct drm_display_mode *dst,
+                             const struct drm_display_mode *src)
 {
-	struct w202_dpu *d = to_w202(pipe->crtc.dev);
-	return drm_mode_equal(mode, &d->modes[0]) ||
-	       drm_mode_equal(mode, &d->modes[1]) ? MODE_OK : MODE_BAD;
+    drm_mode_copy(dst, src);
+    swap(dst->hdisplay, dst->vdisplay);
+    swap(dst->hsync_start, dst->vsync_start);
+    swap(dst->hsync_end, dst->vsync_end);
+    swap(dst->htotal, dst->vtotal);
+    drm_mode_set_name(dst);
+}
+static enum drm_mode_status w202_mode_valid(struct drm_simple_display_pipe *pipe,
+                                          const struct drm_display_mode *mode)
+{
+    struct w202_dpu *d = to_w202(pipe->crtc.dev);
+    struct drm_display_mode logical;
+    unsigned int i;
+    for (i = 0; i < ARRAY_SIZE(d->modes); i++) {
+        w202_logical_mode(&logical, &d->modes[i]);
+        if (drm_mode_equal(mode, &logical)) return MODE_OK;
+    }
+    return MODE_BAD;
 }
 static int w202_check(struct drm_simple_display_pipe *pipe,
 		     struct drm_plane_state *plane, struct drm_crtc_state *crtc)
 {
 	struct drm_framebuffer *fb = plane->fb;
 	struct w202_dpu *d = to_w202(pipe->crtc.dev);
+	bool quarter_turn = plane->rotation & (DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_270);
+	u32 width = quarter_turn ? 1200 : 1920;
+	u32 height = quarter_turn ? 1920 : 1200;
 
 	if (!READ_ONCE(d->scanout_allowed))
 		return -EBUSY;
 	if (fb && !READ_ONCE(d->display_ready))
 		return -EAGAIN;
 	if (!fb) return 0;
+	if (!is_power_of_2(plane->rotation) ||
+	    !(plane->rotation & DRM_MODE_ROTATE_MASK))
+		return -EINVAL;
 	if (plane->src_x || plane->src_y || fb->offsets[0] ||
-	    fb->width != 1200 || fb->height != 1920 ||
+	    fb->width != width || fb->height != height ||
+	    plane->src_w != width << 16 || plane->src_h != height << 16 ||
+	    plane->crtc_x || plane->crtc_y ||
+	    plane->crtc_w != 1920 || plane->crtc_h != 1200 ||
 	    fb->pitches[0] % fb->format->cpp[0] ||
 	    fb->pitches[0] / fb->format->cpp[0] > 0x7fff)
 		return -EINVAL;
@@ -369,13 +404,18 @@ static void w202_update(struct drm_simple_display_pipe *pipe,
 			drm_crtc_vblank_put(&pipe->crtc);
 		return;
 	}
-	/* Board mounting is fixed at 180 degrees; do not derive it from LK. */
-	ctrl = (2 << 20) | BIT(2);
+	/* DRM rotations are counterclockwise; r6p0 source codes clockwise.
+	 * Compose against installation correction, without CPU pixel rotation. */
+	ctrl = (w202_rotation_code(__ffs(state->rotation & DRM_MODE_ROTATE_MASK),
+			    mount_rotation) << 20) | BIT(2);
 	ctrl |= fb->format->format == DRM_FORMAT_RGB565 ? 0x40 : 0x30;
 	writel(lower_32_bits(obj->dma_addr), d->regs + 0x30);
 	writel(ctrl, d->regs + 0x40);
-	writel(1920u << 16 | 1200, d->regs + 0x44);
-	writel(1920u << 16 | 1200, d->regs + 0x48);
+	/* r6p0 size registers describe the image before rotation. With no
+	 * scaling both use the source size, including for quarter turns.
+	 */
+	writel(fb->height << 16 | fb->width, d->regs + 0x44);
+	writel(fb->height << 16 | fb->width, d->regs + 0x48);
 	writel(fb->pitches[0] / fb->format->cpp[0], d->regs + 0x4c);
 	writel(0, d->regs + 0x50);
 	writel(0xff, d->regs + 0x54);
@@ -423,7 +463,11 @@ static void w202_enable(struct drm_simple_display_pipe *pipe,
 	if (!READ_ONCE(d->scanout_allowed) || !READ_ONCE(d->display_ready))
 		return;
 	mutex_lock(&d->hw_lock);
-	ret = w202_dsi_set_mode(d, &crtc->adjusted_mode);
+	{
+        struct drm_display_mode native;
+        w202_logical_mode(&native, &crtc->adjusted_mode);
+        ret = w202_dsi_set_mode(d, &native);
+    }
 	if (!ret)
 		ret = w202_dsi_set_power(d, true);
 	mutex_unlock(&d->hw_lock);
@@ -477,6 +521,7 @@ static int w202_get_modes(struct drm_connector *connector)
 
  for (i = 0; i < ARRAY_SIZE(d->modes); i++) {
   mode = drm_mode_duplicate(connector->dev, &d->modes[i]);
+  if (mode) w202_logical_mode(mode, &d->modes[i]);
   if (!mode)
    return -ENOMEM;
   mode->type = DRM_MODE_TYPE_DRIVER;
@@ -577,7 +622,11 @@ static int w202_probe(struct platform_device *pdev)
 	if (IS_ERR(d)) { ret = PTR_ERR(d); goto out_nodes; }
 	d->dev = &pdev->dev;
 	d->backlight = backlight_device_get_by_name("w202-backlight");
-	if (!d->backlight) { ret = -EPROBE_DEFER; goto out_nodes; }
+	if (!d->backlight) {
+		ret = dev_err_probe(&pdev->dev, -EPROBE_DEFER,
+			"waiting for backlight provider\n");
+		goto out_nodes;
+	}
 	ret = devm_add_action_or_reset(d->dev, w202_put_backlight, d->backlight);
 	if (ret) goto out_nodes;
 	platform_set_drvdata(pdev, d);
@@ -600,15 +649,23 @@ static int w202_probe(struct platform_device *pdev)
 	ret = drmm_mode_config_init(&d->drm); if (ret) goto out_nodes;
 	d->drm.mode_config.funcs = &config_funcs;
 	d->drm.mode_config.helper_private = &config_helpers;
-	d->drm.mode_config.min_width = d->drm.mode_config.max_width = 1200;
-	d->drm.mode_config.min_height = d->drm.mode_config.max_height = 1920;
+	/* Rotated framebuffers swap dimensions; panel timings stay native. */
+	d->drm.mode_config.min_width = d->drm.mode_config.min_height = 1200;
+	d->drm.mode_config.max_width = d->drm.mode_config.max_height = 1920;
 	ret = drm_connector_init(&d->drm, &d->connector, &connector_funcs, DRM_MODE_CONNECTOR_DSI);
 	if (ret) goto out_nodes;
 	drm_connector_helper_add(&d->connector, &connector_helpers);
-	d->connector.display_info.width_mm = 135;
-	d->connector.display_info.height_mm = 216;
+	/* Mounting is normalized in KMS and input; no second desktop correction. */
+	ret = drm_connector_set_panel_orientation(&d->connector,
+		DRM_MODE_PANEL_ORIENTATION_NORMAL);
+	if (ret) goto out_nodes;
+	d->connector.display_info.width_mm = 216;
+	d->connector.display_info.height_mm = 135;
 	ret = drm_simple_display_pipe_init(&d->drm, &d->pipe, &pipe_funcs, formats,
 		ARRAY_SIZE(formats), NULL, &d->connector);
+	if (ret) goto out_nodes;
+	ret = drm_plane_create_rotation_property(&d->pipe.plane,
+		DRM_MODE_ROTATE_0, DRM_MODE_ROTATE_MASK);
 	if (ret) goto out_nodes;
 	drm_mode_config_reset(&d->drm);
 	ret = drm_vblank_init(&d->drm, 1); if (ret) goto out_nodes;
@@ -648,15 +705,19 @@ static struct platform_driver platform_driver = {
 static int __init w202_init(void)
 {
 	struct platform_device *pdev;
-	int ret = platform_driver_register(&platform_driver);
+	int ret;
+
+	if (mount_rotation != 90 && mount_rotation != 270)
+		return -EINVAL;
+	ret = platform_driver_register(&platform_driver);
 	if (ret) return ret;
 	pdev = platform_device_register_simple("w202-r6p0-lk-dsi", -1, NULL, 0);
 	if (IS_ERR(pdev)) { platform_driver_unregister(&platform_driver); return PTR_ERR(pdev); }
-	if (!pdev->dev.driver) {
-		platform_device_unregister(pdev);
-		platform_driver_unregister(&platform_driver);
-		return -ENODEV;
-	}
+	/* Backlight registration can happen after initramfs has loaded us.
+	 * Keep the device registered so the driver core can retry deferred probe.
+	 */
+	if (!pdev->dev.driver)
+		dev_info(&pdev->dev, "registered; awaiting display providers\n");
 	return 0;
 }
 module_init(w202_init);

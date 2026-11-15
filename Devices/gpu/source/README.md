@@ -4,3 +4,5 @@
 Panfrost / GLES 3.1 的像素校验和 glmark2 离屏短测已通过；KDE、浏览器和长时间运行仍待验收。
 
 GPU 源码目前仅发布这一份实现。W202DS 的 Vulkan 可用性尚未验证。
+
+本目录维护内核侧；Mesa/PanVK 用户态构建资料和诊断归到 [`../userspace/`](../userspace/README.md)。

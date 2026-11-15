@@ -1,0 +1,12 @@
+[Unit]
+Description=W202DS USB ACM and NCM gadget
+After=local-fs.target systemd-udev-trigger.service
+Before=serial-getty@ttyGS0.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/w202-usb-gadget start
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

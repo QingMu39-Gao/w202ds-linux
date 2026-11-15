@@ -315,9 +315,9 @@ int sc2355_scan(struct wiphy *wiphy, struct cfg80211_scan_request *request)
 		sc2355_random_mac_addr(rand_addr);
 		if ((flags & NL80211_SCAN_FLAG_RANDOM_ADDR) && (priv->rand_mac_flag == 0)) {
 			random_mac_flag = SPRD_ENABLE_SCAN_RANDOM_ADDR;
-			wiphy_err(wiphy, "random mac addr: %pM\n", rand_addr);
+			wiphy_info(wiphy, "random mac addr: %pM\n", rand_addr);
 		} else {
-			wiphy_err(wiphy, "random mac feature disabled\n");
+			wiphy_info(wiphy, "random mac feature disabled\n");
 			random_mac_flag = SPRD_DISABLE_SCAN_RANDOM_ADDR;
 		}
 		if (sprd_set_random_mac(vif->priv, vif, random_mac_flag, rand_addr))

@@ -1,2 +1,2 @@
 obj-m += w202_ump9620_typec.o
-w202_ump9620_typec-y := core.o hardware.o hardware-reset.o protocol.o recovery.o supply.o
+w202_ump9620_typec-y := core.o roles.o hardware.o hardware-reset.o protocol.o recovery.o supply.o profiles.o charger.o vbus.o

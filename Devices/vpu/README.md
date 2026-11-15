@@ -19,14 +19,10 @@ vpu/
 │   ├── v4l2.md                      # 标准接口适配路线和控制模型
 │   ├── validation-*.json            # 分阶段硬件验证、网站播放与已知限制
 │   └── tests/                       # 内核诊断模块
-├── userspace/
-│   ├── README.md                    # 用户态源码说明
-│   └── source/                      # AVC worker、测试、解析和桥的本地补丁
-├── reference/                       # 本地：厂商参考、移植历史和 ABI 分析
-├── modules/                         # 本地：历史模块及构建证据
-├── evidence/                        # 本地：原厂设备树证据
-└── device.json、SOURCES*.json        # 本地：设备清单和来源身份
+└── userspace/                       # 用户态源码、诊断与库适配
 ```
+
+用户态单独维护在 `userspace/`，包含原生 V4L2 诊断、解析器和库适配补丁；旧 Android worker 已删除并禁止启用。
 
 | 功能 | 可用性 | 问题描述 |
 | --- | --- | --- |
@@ -43,14 +39,16 @@ vpu/
 | 视频编码 | 待验证 | 尚无编码功能验收结果。 |
 | 其他视频格式 | 待验证 | 当前结果只覆盖 H.264 / AVC。 |
 
-更新日期：2026-11-08（UTC）
+上表为历史验收记录，不能代替当前 rootfs 的应用集成验收。当前驱动已实测 Baseline/Main/High、I/P/B、裁剪，MMAP 与 DMA-BUF 两种路径共 14 例逐字节匹配；旧 worker 服务永久屏蔽。
+
+历史记录更新日期：2026-11-08（UTC）
 
 `source/` 根目录直接放当前驱动、公共头文件和 Makefile；`source/tests/` 放内核诊断代码。
 电源、IOMMU、codec 三件模块的职责和构建入口见 [源码说明](source/README.md)。
-用户态源码见 [userspace/README.md](userspace/README.md)；专有运行库、运行包和外部
+用户态源码见 [用户态说明](userspace/README.md)；专有运行库、运行包和外部
 `libva-v4l2_request/` 依赖保留在本地。
 
-已有原厂解码链为 `H.264 → Bionic worker → 原厂 AVC 库 → 私有 ioctl/MMIO → VPU`。
+已移除的历史原厂解码链为 `H.264 → Bionic worker → 原厂 AVC 库 → 私有 ioctl/MMIO → VPU`。
 新 codec 已含 V4L2、vb2 和 Request API 实验前端，复用原私有接口的硬件独占、
 runtime PM、复位和 DMA 隔离。2026-11-07 的独立 Baseline/Main 单 slice IDR/P，
 以及 Main 单 L0/L1 短期参考、非参考 spatial-direct B 已通过原生真机像素测试。
@@ -73,7 +71,7 @@ Firefox 呈现 8 帧、丢帧 0。Firefox 需要进程内绑定匹配 Mesa GLES 
 不能只凭零新增丢帧推断画面流畅。卡顿根因仍未锁定，也未修复。
 
 历史源码、候选与证据位于只读研究归档 `archive/linux/vpu-v4l2-20261107-v2/`，
-统一报告为 `evidence/qualification-v9.json`。该历史轮次的测试 profile 和临时目录已清理。
+该轮报告已独立归档。该历史轮次的测试 profile 和临时目录已清理。
 当前 V13 仅临时加载在内存，磁盘仍为 V2，重启后回到 V2；尚未持久安装。
 V13 用例、模块／桥身份、网页和空闲证据见 [validation-v13.json](source/validation-v13.json)。
 V10 历史用例见 [validation-v10.json](source/validation-v10.json)；V13 的完整截图、日志、

@@ -4,7 +4,7 @@ ccflags-y += -I$(src)
 obj-m += w202_vpu_power.o
 obj-m += w202_vpu_iommu.o
 obj-m += w202_vpu_codec.o
-w202_vpu_codec-y := w202_vpu_buffers.o w202_vpu_ranges.o w202_vpu_codec_main.o w202_vpu_h264.o w202_vpu_video.o
+w202_vpu_codec-y := w202_vpu_buffers.o w202_vpu_ranges.o w202_vpu_codec_main.o w202_vpu_h264.o w202_vpu_hevc.o w202_vpu_video.o
 
 # Optional diagnostics share the same headers and preserve their module names.
 obj-m += w202_vpu_probe.o

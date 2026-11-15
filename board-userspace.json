@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "board": "w202ds",
+  "components": {
+    "audio": {
+      "userspace": "Devices/audio/userspace"
+    },
+    "camera": {
+      "userspace": "Devices/camera/userspace"
+    },
+    "charging": {
+      "userspace": "Devices/charging/userspace"
+    },
+    "drm": {
+      "userspace": "Devices/drm/userspace"
+    },
+    "gpu": {
+      "userspace": "Devices/gpu/userspace"
+    },
+    "hall": {
+      "userspace": "Devices/hall/userspace"
+    },
+    "keyboard": {
+      "userspace": "Devices/keyboard/userspace"
+    },
+    "modem": {
+      "userspace": "Devices/modem/userspace"
+    },
+    "sensorhub": {
+      "userspace": "Devices/sensorhub/userspace"
+    },
+    "touchscreen": {
+      "userspace": "Devices/touchscreen/userspace"
+    },
+    "usb3": {
+      "userspace": "Devices/usb3/userspace"
+    },
+    "vpu": {
+      "userspace": "Devices/vpu/userspace"
+    },
+    "wcn": {
+      "userspace": "Devices/wcn/userspace"
+    },
+    "common": {
+      "userspace": "Devices/userspace-common"
+    },
+    "vpu-vaapi": {
+      "userspace": "Devices/vpu/userspace/vaapi"
+    }
+  },
+  "exports": {
+    "usb-gadget": {
+      "component": "usb3",
+      "file": "rootfs/usr/libexec/w202-usb-gadget"
+    },
+    "native-header": {
+      "component": "common",
+      "file": "source/native.h"
+    }
+  },
+  "build": {
+    "command": [
+      "make",
+      "-C",
+      "Devices",
+      "-f",
+      "userspace.mk"
+    ],
+    "output": "output/userspace",
+    "producers": [
+      {
+        "name": "gpu",
+        "script": "Devices/gpu/userspace/panvk/build-runtime.py"
+      },
+      {
+        "name": "modemmanager",
+        "script": "Devices/modem/userspace/build-modemmanager.py"
+      },
+      {
+        "name": "v4l2-vaapi",
+        "script": "Devices/vpu/userspace/build-vaapi.py"
+      }
+    ]
+  }
+}

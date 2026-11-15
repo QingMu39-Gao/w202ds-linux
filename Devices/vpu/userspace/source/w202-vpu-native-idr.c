@@ -106,12 +106,12 @@ int main(int argc, char **argv)
 		.sps = &f.sps, .pps = &f.pps, .slice = &f.slice, .decode = &f.decode,
 		.scaling = &f.scaling,
 		.input_address = 0x40000000, .output_address = 0x41000000, .auxiliary_address = 0x42000000,
-		.input_capacity = f.nal_size + W202_H264_BSM_PADDING,
+		.input_capacity = f.nal_size + W202_VPU_BSM_PADDING,
 		.output_capacity = (uint64_t)width * height * 3 / 2,
 		.auxiliary_capacity = (uint64_t)(width / 16) * (height / 16) * 80 + 1024,
 		.input_bytes = f.nal_size, .nalu_bytes = f.rbsp_size,
 	};
-	struct w202_h264_config config;
+	struct w202_vpu_config config;
 	check(!w202_h264_build_idr(&job, &config), "supported native controls");
 	int output = open(argv[2], O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
 	check(output >= 0, "new pixel output file");
@@ -135,7 +135,7 @@ int main(int argc, char **argv)
 	poll(0x8018, 0x08000000, 0);
 	reg_write(0x1080, config.stream_address >> 4); reg_write(0x1084, config.stream_address >> 4);
 	reg_write(0x8008, 6); reg_write(0x8004, 0x80000000);
-	reg_write(0x8000, (config.stream_bytes + W202_H264_BSM_PADDING) | 0x80000000);
+	reg_write(0x8000, (config.stream_bytes + W202_VPU_BSM_PADDING) | 0x80000000);
 	for (unsigned int bits = config.header_bits; bits;) {
 		unsigned int n = bits > 32 ? 32 : bits;
 		poll(0x8020, 1, 1); reg_write(0x8008, n << 24); reg_write(0x8008, (n << 24) | 1);

@@ -1,0 +1,14 @@
+[Unit]
+Description=W202DS guarded charging policy
+After=local-fs.target systemd-modules-load.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=CHARGE_BEHAVIOUR=inhibit-charge
+EnvironmentFile=-/etc/default/w202-charging
+ExecStart=/usr/libexec/w202-charging ${CHARGE_BEHAVIOUR}
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

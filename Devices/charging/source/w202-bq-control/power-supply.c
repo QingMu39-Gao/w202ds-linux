@@ -94,7 +94,7 @@ static int get_property(struct power_supply *psy, enum power_supply_property pro
 		goto out;
 	}
 	if (property == POWER_SUPPLY_PROP_ONLINE) {
-		val->intval = !!(status & BIT(2));
+		val->intval = !bq->otg_active && !!(status & BIT(2));
 		goto out;
 	}
 	if (property != POWER_SUPPLY_PROP_STATUS) {

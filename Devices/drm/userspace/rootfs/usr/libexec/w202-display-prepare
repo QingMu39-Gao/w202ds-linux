@@ -1,0 +1,25 @@
+#!/bin/sh
+# Activate native display before the login console takes ownership.
+set -eu
+release=$(uname -r)
+test "$(modinfo -F vermagic w202_r6p0 | cut -d ' ' -f 1)" = "$release"
+if ! test -d /sys/class/backlight/w202-backlight; then
+    /sbin/modprobe w202ds_backlight
+    /usr/libexec/w202-backlight-attach
+fi
+/sbin/modprobe w202_r6p0 defer_modeset=1
+display=/sys/devices/platform/w202-r6p0-lk-dsi
+# modprobe may return while a deferred DRM provider is still probing.
+attempt=0
+while ! test -w "$display/display_enable"; do
+    attempt=$((attempt + 1))
+    test "$attempt" -le 200 || {
+        echo 'W202DS display: native DRM control did not become ready' >&2
+        exit 1
+    }
+    sleep 0.05
+done
+if test "$(cat "$display/display_ready")" != 1; then
+    printf '%s\n' 1 > "$display/display_enable"
+fi
+test "$(cat "$display/display_ready")" = 1

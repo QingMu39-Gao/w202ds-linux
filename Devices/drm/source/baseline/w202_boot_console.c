@@ -11,8 +11,9 @@
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
 #include <drm/drm_client.h>
-#include <drm/drm_fourcc.h>
+#include <drm/drm_connector.h>
 #include <drm/drm_framebuffer.h>
+#include <drm/drm_fourcc.h>
 #include <drm/drm_print.h>
 #include "w202_r6p0.h"
 #include "w202_boot_text.h"
@@ -26,7 +27,7 @@ struct w202_boot_console {
 	raw_spinlock_t lock;
 	struct w202_boot_text text, frame;
 	u8 drawn[W202_TEXT_ROWS][W202_TEXT_COLS];
-	u16 glyphs[96][W202_TEXT_W][W202_TEXT_H];
+	struct pj4edk_glyphs glyphs;
 	void *inherited;
 	bool active, registered, captured, committed;
 	u64 frames, cells, render_ns, render_max_ns;
@@ -37,7 +38,8 @@ static void w202_boot_render(struct work_struct *work)
 	struct w202_boot_console *b = container_of(work, struct w202_boot_console, work);
 	unsigned long flags;
 	u64 start, changed = 0, elapsed;
-	unsigned int row, col, x, ch;
+	unsigned int row, col, x, y, ch;
+	u32 line[W202_TEXT_W];
 
 	raw_spin_lock_irqsave(&b->lock, flags);
 	if (!b->active) {
@@ -55,10 +57,13 @@ static void w202_boot_render(struct work_struct *work)
 			ch = b->frame.cells[row][col];
 			if (b->drawn[row][col] == ch)
 				continue;
-			for (x = 0; x < W202_TEXT_W; x++)
+			for (y=0; y<W202_TEXT_H; ++y) {
+				for (x=0; x<W202_TEXT_W; ++x)
+					line[x]=b->glyphs.pixels[ch-32][x][W202_TEXT_H-1-y]?0x00dedede:0;
 				iosys_map_memcpy_to(&b->map,
-					w202_boot_text_offset(&b->frame, b->buffer->pitch, row, col, x),
-					b->glyphs[ch - 32][x], W202_TEXT_H * sizeof(u16));
+					(b->frame.top+row*W202_TEXT_H+y)*b->buffer->pitch+
+					(b->frame.left+col*W202_TEXT_W)*4,line,sizeof(line));
+			}
 			b->drawn[row][col] = ch;
 			changed++;
 		}
@@ -132,7 +137,6 @@ int w202_boot_console_prepare(struct w202_dpu *d)
 	struct device_node *chosen;
 	struct w202_boot_console *b;
 	u32 v[20];
-	unsigned int ch, x, y;
 	const u8 *font = font_vga_8x16.data;
 	int ret;
 
@@ -165,13 +169,8 @@ int w202_boot_console_prepare(struct w202_dpu *d)
 	}
 	raw_spin_lock_init(&b->lock);
 	INIT_WORK(&b->work, w202_boot_render);
-	for (ch = 32; ch < 128; ch++)
-		for (x = 0; x < W202_TEXT_W; x++)
-			for (y = 0; y < W202_TEXT_H; y++)
-				b->glyphs[ch - 32][x][W202_TEXT_H - 1 - y] =
-					font[ch * 16 + y * 16 / W202_TEXT_H] &
-					(0x80 >> (x * 8 / W202_TEXT_W)) ? 0xdedb : 0;
-	b->inherited = memremap(0xb0000000, 4608000, MEMREMAP_WB);
+	pj4edk_prepare_font(&b->glyphs, font);
+	b->inherited = memremap(0xb0000000, 9216000, MEMREMAP_WB);
 	if (!b->inherited) {
 		ret = -ENOMEM;
 		goto free;
@@ -179,7 +178,7 @@ int w202_boot_console_prepare(struct w202_dpu *d)
 	ret = drm_client_init(&d->drm, &b->client, "w202-boot-log", &w202_boot_client_funcs);
 	if (ret)
 		goto unmap;
-	b->buffer = drm_client_framebuffer_create(&b->client, 1200, 1920, DRM_FORMAT_RGB565);
+	b->buffer = drm_client_framebuffer_create(&b->client, 1920, 1200, DRM_FORMAT_XRGB8888);
 	if (IS_ERR(b->buffer)) {
 		ret = PTR_ERR(b->buffer);
 		goto release;
@@ -187,7 +186,7 @@ int w202_boot_console_prepare(struct w202_dpu *d)
 	ret = drm_client_buffer_vmap(b->buffer, &b->map);
 	if (ret)
 		goto delete;
-	if (b->buffer->pitch < 2400) {
+	if (b->buffer->pitch < 7680) {
 		ret = -EINVAL;
 		drm_client_buffer_vunmap(b->buffer);
 		goto delete;
@@ -220,9 +219,9 @@ void w202_boot_console_capture(struct w202_dpu *d)
 	 */
 	if (!b || b->captured)
 		return;
-	for (y = 0; y < 1920; y++)
+	for (y = 0; y < 1200; y++)
 		iosys_map_memcpy_to(&b->map, y * b->buffer->pitch,
-				   b->inherited + y * 2400, 2400);
+				   b->inherited + y * 7680, 7680);
 	wmb();
 	memunmap(b->inherited);
 	b->inherited = NULL;
@@ -232,22 +231,25 @@ void w202_boot_console_capture(struct w202_dpu *d)
 int w202_boot_console_start(struct w202_dpu *d)
 {
 	struct w202_boot_console *b = d->boot_console;
-	struct drm_mode_set *set;
 	u64 timeouts = d->latch_timeouts, updates = d->updates;
+	struct drm_mode_set *set;
 	int ret;
 
 	if (b->committed)
 		return 0;
 	if (!b->captured)
 		return -EINVAL;
-	ret = drm_client_modeset_probe(&b->client, 1200, 1920);
+	ret = drm_client_modeset_probe(&b->client, 1920, 1200);
 	if (ret)
 		return ret;
 	mutex_lock(&b->client.modeset_mutex);
-	drm_client_for_each_modeset(set, &b->client)
+	drm_client_for_each_modeset(set, &b->client) {
 		if (set->num_connectors)
 			set->fb = b->buffer->fb;
+	}
 	mutex_unlock(&b->client.modeset_mutex);
+	/* The public commit helper obtains both the internal DRM master and
+	 * modeset_mutex. Never call it while holding that mutex ourselves. */
 	ret = drm_client_modeset_commit(&b->client);
 	if (ret)
 		return ret;

@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "base": "project",
+  "rootfs": "output/userspace/drm/rootfs",
+  "required": [
+    "usr/libexec/w202-backlight-attach"
+  ]
+}

@@ -5,7 +5,7 @@
 #include <linux/atomic.h>
 #include <linux/device.h>
 #include "w202_vpu_buffer_uapi.h"
-#include "w202_vpu_h264.h"
+#include "w202_vpu_hw.h"
 
 struct codec_file;
 struct dma_buf;
@@ -18,7 +18,7 @@ int w202_vpu_native_validate_buffers(struct codec_file *context,
 				     const struct w202_vpu_iova *input,
 				     const struct w202_vpu_iova *frame);
 int w202_vpu_native_execute(struct codec_file *context,
-			    const struct w202_h264_config *config,
+			    const struct w202_vpu_config *config,
 			    const atomic_t *abort);
 /* Reset precedes all unmapping. Failed reset quarantines context and imports. */
 int w202_vpu_native_end(struct codec_file *context);

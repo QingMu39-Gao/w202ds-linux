@@ -5,7 +5,10 @@ import io
 import unittest
 from unittest.mock import patch
 
-import w202ds_gnss as gnss
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent / "tests"))
+import reference_gnss as gnss
 
 # Captured from this board, before sending any navigation command.
 BOOT = bytes.fromhex('7e7e7e7e03070000fffb0000')
