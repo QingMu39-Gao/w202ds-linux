@@ -62,7 +62,7 @@ make -C lk/legacy-buildchain/ramboot \
 
 ## 来源与参考
 
-解析器、公开上游和许可证见 [仓库说明](../../README.md) 与 [输入版本](../../pocketjs4edk2_uefi/inputs.lock.json)。固定原厂 ABI、签名基线和冷启动日志来自本机备份与探针；实际文件选择由外层传入。本目录与旧 PJB 的 `resident/resident-*.S` 分别维护各自的启动逻辑。
+解析器、公开上游和许可证见 [仓库说明](../../../README.md) 与 [输入版本](../../../pocketjs4edk2_uefi/inputs.lock.json)。固定原厂 ABI、签名基线和冷启动日志来自本机备份与探针；实际文件选择由外层传入。本目录与旧 PJB 的 `resident/resident-*.S` 分别维护各自的启动逻辑。
 
 ### RAM probes while the UEFI menu is active
 
