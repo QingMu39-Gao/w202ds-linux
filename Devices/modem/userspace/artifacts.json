@@ -10,6 +10,7 @@
     "usr/share/w202ds/modem/runtime-properties.bin",
     "opt/w202ds/modemmanager/sbin/ModemManager",
     "opt/w202ds/modemmanager/lib/ModemManager/libmm-plugin-w202ds.so",
+    "usr/share/polkit-1/actions/org.freedesktop.ModemManager1.policy",
     "usr/lib/udev/rules.d/77-mm-w202ds.rules"
   ]
 }

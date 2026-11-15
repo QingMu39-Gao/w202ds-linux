@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build the hardware ModemManager adapter with an explicit target SDK."""
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -27,12 +28,20 @@ def main():
     setup = ['meson', 'setup']
     if (build/'meson-private/coredata.dat').is_file():
         setup += ['--reconfigure']
+        recorded = build/'meson-info/intro-buildoptions.json'
+        if recorded.is_file() and not any(
+                option['name'] == 'polkit_policy_dir'
+                for option in json.loads(recorded.read_text())):
+            # Refresh old option caches before passing the newly introduced
+            # runtime directory option to Meson's command-line parser.
+            subprocess.run([*setup, str(build), str(source)], check=True)
     options = [
         '--prefix=/opt/w202ds/modemmanager', '--libdir=lib',
         '--sysconfdir=/etc', '--buildtype=release', '--wrap-mode=nofallback',
         '--auto-features=disabled', '--cross-file', str(args.cross_file.resolve()),
         '-Dplugin_w202ds=enabled', '-Dudev=true', '-Dudevdir=/usr/lib/udev',
         '-Ddbus_policy_dir=/usr/share/dbus-1/system.d',
+        '-Dpolkit_policy_dir=/usr/share/polkit-1/actions',
         '-Dsystemdsystemunitdir=no',
         '-Dpolkit=strict', '-Dmbim=false', '-Dqmi=false', '-Dqrtr=false',
         '-Dintrospection=false', '-Dvapi=false', '-Dman=false', '-Dgtk_doc=false',
@@ -44,6 +53,23 @@ def main():
     subprocess.run(['meson', 'install', '-C', str(build), '--no-rebuild',
                     '--destdir', str(output/'rootfs')], check=True,
                    env=dict(os.environ))
+    stage = output/'rootfs'
+    policy = stage/'usr/share/polkit-1/actions/org.freedesktop.ModemManager1.policy'
+    if not policy.is_file():
+        raise RuntimeError('ModemManager PolicyKit action was not staged at its runtime path')
+    # Rebuilding also removes the action left at an SDK-prefixed path by older
+    # cross builds, while preserving the other modem tools staged by Make.
+    for stale in list(stage.rglob(policy.name)):
+        if stale == policy:
+            continue
+        stale.unlink()
+        parent = stale.parent
+        while parent != stage:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
 
 
 if __name__ == '__main__':

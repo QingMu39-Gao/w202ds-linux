@@ -240,7 +240,10 @@ enable_polkit = (polkit_opt != 'no')
 if enable_polkit
   polkit_gobject_dep = dependency('polkit-gobject-1', version: '>= 0.97', not_found_message: 'PolicyKit development headers are required')
 
-  polkit_gobject_policydir = polkit_gobject_dep.get_pkgconfig_variable('policydir', define_variable: ['prefix', mm_prefix])
+  polkit_gobject_policydir = get_option('polkit_policy_dir')
+  if polkit_gobject_policydir == ''
+    polkit_gobject_policydir = polkit_gobject_dep.get_pkgconfig_variable('policydir', define_variable: ['prefix', mm_prefix])
+  endif
 
   policy_conf = {'MM_DEFAULT_USER_POLICY': (polkit_opt == 'permissive' ? 'yes' : 'auth_self_keep')}
 endif

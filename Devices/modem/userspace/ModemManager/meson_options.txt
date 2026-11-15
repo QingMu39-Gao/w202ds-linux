@@ -8,6 +8,7 @@ option('examples', type: 'boolean', value: true, description: 'install examples'
 option('tests', type: 'boolean', value: true, description: 'enable tests')
 
 option('dbus_policy_dir', type: 'string', value: '', description: 'd-bus system policy directory')
+option('polkit_policy_dir', type: 'string', value: '', description: 'PolicyKit runtime actions directory (without the target SDK prefix)')
 
 option('systemdsystemunitdir', type: 'string', value: '', description: 'systemd system units directory')
 option('systemd_suspend_resume', type: 'boolean', value: true, description: 'enable suspend/resume support with systemd')

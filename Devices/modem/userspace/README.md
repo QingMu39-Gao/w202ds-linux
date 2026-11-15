@@ -20,6 +20,8 @@ make OUT=/path/to/native-tests check
 
 基础构建需要 AArch64 GCC 和 Python 3，生成原生 C 工具及属性区；Python 仅用于构建属性区和测试；`check` 用 HOSTCC 运行主机测试。ModemManager 适配器使用 `build-modemmanager.py --cross-file <目标SDK交叉文件>` 构建，依赖 GLib、D-Bus、GUdev、PolicyKit 和 systemd 开发文件；输出固定为 `output/userspace/modem/modemmanager`，安装树为 `output/userspace/modem/rootfs`。它只构建 W202DS 插件，不启用无关的 QMI/MBIM 后端。基础 Makefile 不隐式运行该构建。
 
+PolicyKit action 固定安装到目标系统的 `/usr/share/polkit-1/actions/`，不继承交叉 SDK 的 pkg-config 路径；重复构建会清除旧输出中的错误策略路径，保留其他已暂存的基带工具。
+
 目标系统需要 systemd、libc、kmod、iproute2、util-linux/loop、匹配模块和本机合法固件/NV 输入。APN 默认空，独立启动准备默认关闭；安装不启用服务或提供私有输入。
 
 运行桥接与 Linux 工具保持 ABI 分离，原厂 Bionic 程序和库不随源码发布。NV 镜像长度、头和校验和必须有效，损坏输入直接报错。硬件运行配置见 [RUNTIME.md](RUNTIME.md)，服务启用、权限与连接策略由系统集成者定义。SIM 适配见 [插件测试说明](ModemManager/src/plugins/w202ds/tests/README.md)。IPv6、双卡、热拔卡和长期稳定性仍需验证。
