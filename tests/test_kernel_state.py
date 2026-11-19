@@ -23,7 +23,7 @@ class KernelStateTests(unittest.TestCase):
         parent.mkdir(parents=True, exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(dir=parent)
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.kernel = self.root / 'kernel'
         self.kernel.mkdir()
         (self.kernel / 'Makefile').write_text('# kernel fixture\n')

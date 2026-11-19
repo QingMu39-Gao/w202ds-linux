@@ -15,7 +15,8 @@ def export(build, output, board):
     build = verified['kdir']
     release = verified['kernelrelease']
     output = output.resolve()
-    if not output.is_relative_to(ROOT / 'output') or output == ROOT / 'output':
+    output_root = (ROOT / 'output').resolve()
+    if not output.is_relative_to(output_root) or output == output_root:
         raise ValueError('Runtime output must be a subdirectory of project output/')
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.runtime-', dir=output.parent) as tmp:

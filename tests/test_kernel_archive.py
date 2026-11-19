@@ -34,7 +34,7 @@ class KernelArchiveTests(unittest.TestCase):
         parent.mkdir(parents=True, exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(dir=parent)
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.kernel = self.root / 'kernel'
         self.kernel.mkdir()
         (self.kernel / 'Makefile').write_text('# test source identity\n')

@@ -68,9 +68,22 @@ def source_identity(kernel):
         target = link.resolve(strict=True)
         if target.is_relative_to(kernel):
             continue
-        paths = sorted(target.rglob('*')) if target.is_dir() else [target]
-        files = {str(p.relative_to(target)) if target.is_dir() else '.': sha256(p)
-                 for p in paths if p.is_file()}
+        files = {}
+        def collect(path, relative, ancestors):
+            real = path.resolve(strict=True)
+            if real in ancestors:
+                raise ValueError('Cycle in kernel-linked source: '+str(path))
+            if real.is_dir():
+                for child in sorted(path.iterdir()):
+                    if child.name in ('.git', '__pycache__'):
+                        continue
+                    collect(child, relative/child.name, ancestors | {real})
+            elif real.is_file():
+                files[relative.as_posix()] = sha256(real)
+        # Shared project headers are often another directory symlink below
+        # Devices/. Include their contents rather than hashing only the board
+        # adapter and overlooking a changed shared renderer.
+        collect(target, Path('.'), set())
         links[name] = {'target': os.readlink(link), 'files': files}
     return {'commit': commit, 'external_links': links}
 
