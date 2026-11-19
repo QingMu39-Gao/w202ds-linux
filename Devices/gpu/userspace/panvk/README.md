@@ -28,6 +28,12 @@ libdrm、Wayland 开发包和 wayland-protocols；原生 shader 工具还需要 
 LLVM-SPIRV、libclc 和符合该 Mesa 版本要求的 SPIRV-Tools。
 具体最低版本以源码 Meson 检查为准，不跳过版本检查。
 
+`build-runtime.py --cross-file <ARM64交叉配置>` 会依次构建主机 shader 工具、
+ARM64 ICD 并安装到板级产物目录，自动将本次生成的 shader 工具加入交叉构建的 PATH。
+可用 `--native-file <主机Meson配置>` 指定主机编译器；LLVM 开发包若带有 Clang
+专用编译参数，应在此选择匹配的 Clang。该配置也用于交叉构建期间执行的主机工具，
+ARM64 工具链仍由 cross file 指定。
+
 准备固定提交的干净源码工作树后执行：
 
 ```sh
