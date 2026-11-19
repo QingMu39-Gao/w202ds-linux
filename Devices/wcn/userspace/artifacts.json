@@ -6,6 +6,18 @@
     "usr/libexec/w202-bt-init",
     "usr/libexec/w202ds-gnss",
     "usr/lib/firmware/bt_configure_pskey.ini",
-    "usr/lib/firmware/bt_configure_rf.ini"
-  ]
+    "usr/lib/firmware/bt_configure_rf.ini",
+    "usr/lib/firmware/gnssmodem.bin",
+    "usr/lib/firmware/wcnmodem.bin",
+    "usr/lib/firmware/wifi_board_config.ini",
+    "usr/lib/firmware/wifi_board_config_ab.ini"
+  ],
+  "required_sha256": {
+    "usr/lib/firmware/gnssmodem.bin": "f488317c533bae9d55ac1c17b0a8626f8469211205039a86b82fd3b11abbb7d2",
+    "usr/lib/firmware/wcnmodem.bin": "763cd70aa7c2553ace350aaee020438f9ad362fe3c12aedfbbde4577655401ff",
+    "usr/lib/firmware/wifi_board_config.ini": "e5756eff6e77924984c62bc5afd1ea5c84b3baa389605cdc090fbe2e4afb5fd4",
+    "usr/lib/firmware/wifi_board_config_ab.ini": "c062fd2cafc17b8878b5be1db3861c83dde16e1b1377e913ba77776173c69470",
+    "usr/lib/firmware/bt_configure_pskey.ini": "c0b8e544971b17aeee231a71bd1084d0792978abf998db041c21e0b1402199d6",
+    "usr/lib/firmware/bt_configure_rf.ini": "62c286c15f166cae5c544f7d6d7fc22b2eb7e77a9642a08da5764efb9b9ef0b7"
+  }
 }

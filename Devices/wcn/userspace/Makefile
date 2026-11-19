@@ -24,8 +24,9 @@ install: all install-gnss
 	mkdir -p "$(DESTDIR)"
 	cp -a rootfs/. "$(DESTDIR)/"
 	install -D -m 0755 "$(OUT)/w202-bt-init" "$(DESTDIR)/usr/libexec/w202-bt-init"
-	install -D -m 0644 "$(FIRMWARE)/bt_configure_pskey.ini" "$(DESTDIR)/usr/lib/firmware/bt_configure_pskey.ini"
-	install -D -m 0644 "$(FIRMWARE)/bt_configure_rf.ini" "$(DESTDIR)/usr/lib/firmware/bt_configure_rf.ini"
+	for name in gnssmodem.bin wcnmodem.bin wifi_board_config.ini wifi_board_config_ab.ini bt_configure_pskey.ini bt_configure_rf.ini; do \
+	  install -D -m 0644 "$(FIRMWARE)/$$name" "$(DESTDIR)/usr/lib/firmware/$$name" || exit; \
+	done
 
 # Optional standalone NMEA tool; no GNSS power request or daemon activation.
 install-gnss: gnss
