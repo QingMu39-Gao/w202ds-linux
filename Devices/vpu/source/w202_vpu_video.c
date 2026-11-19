@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Native stateless H.264 frontend. Progressive 8-bit 4:2:0 Baseline/Main/High
- * single-slice IDR/P/B, up to sixteen short-term references per active list,
- * spatial/temporal direct and explicit/implicit weighted prediction.
+/* Native stateless H.264/HEVC frontend. Progressive 8-bit 4:2:0,
+ * H.264 Baseline/Main/High and HEVC Main with up to sixteen references.
  * vb2 owns CPU storage; the native job owns device DMA attachments until reset.
  */
 #include <linux/dma-buf.h>
@@ -37,6 +36,7 @@ struct w202_video_context {
 	struct v4l2_ctrl_handler controls;
 	struct v4l2_ctrl *sps, *pps, *slice, *decode, *scaling, *weights;
 	struct v4l2_ctrl *hevc_sps, *hevc_pps, *hevc_slice, *hevc_decode;
+	struct v4l2_ctrl *hevc_entry_points;
 	struct v4l2_pix_format output, capture;
 	struct work_struct work;
 	atomic_t abort;
@@ -47,6 +47,13 @@ struct w202_video_buffer {
 	struct v4l2_m2m_buffer m2m;
 	bool decoded;
 	bool reference;
+	u16 slices;
+	u32 last_mb;
+	struct v4l2_ctrl_h264_sps sps;
+	struct v4l2_ctrl_h264_pps pps;
+	u16 frame_num, nal_ref_idc;
+	s32 poc[2];
+	u32 picture_flags;
 };
 
 static struct w202_video_buffer *buffer_state(struct vb2_buffer *buffer)
@@ -115,7 +122,7 @@ static struct v4l2_pix_format *queue_format(struct w202_video_context *ctx,
 static int video_querycap(struct file *file, void *priv, struct v4l2_capability *cap)
 {
 	strscpy(cap->driver, W202_VIDEO_NAME, sizeof(cap->driver));
-	strscpy(cap->card, "W202DS experimental H.264 IPB", sizeof(cap->card));
+	strscpy(cap->card, "W202DS H.264/HEVC Request", sizeof(cap->card));
 	strscpy(cap->bus_info, "platform:w202-vpu", sizeof(cap->bus_info));
 	return 0;
 }
@@ -141,6 +148,10 @@ static int video_enum_framesizes(struct file *file, void *priv,
 		.min_width = 16, .max_width = 1920, .step_width = 16,
 		.min_height = 16, .max_height = 1088, .step_height = 16,
 	};
+	if (size->pixel_format == V4L2_PIX_FMT_HEVC_SLICE) {
+		size->stepwise.step_width = 8;
+		size->stepwise.step_height = 8;
+	}
 	return 0;
 }
 
@@ -199,9 +210,12 @@ static int video_set_format(struct file *file, void *priv, struct v4l2_format *f
 	*queue_format(ctx, fmt->type) = fmt->fmt.pix;
 	if (output) {
 		struct v4l2_format capture = {.type = V4L2_BUF_TYPE_VIDEO_CAPTURE};
+		struct vb2_queue *queue = v4l2_m2m_get_src_vq(ctx->fh.m2m_ctx);
 
 		video_try_format(file, priv, &capture);
 		ctx->capture = capture.fmt.pix;
+		queue->subsystem_flags = fmt->fmt.pix.pixelformat == V4L2_PIX_FMT_H264_SLICE ?
+			VB2_V4L2_FL_SUPPORTS_M2M_HOLD_CAPTURE_BUF : 0;
 	}
 	return 0;
 }
@@ -251,6 +265,8 @@ static int buffer_prepare(struct vb2_buffer *buffer)
 			return -EINVAL;
 	} else {
 		WRITE_ONCE(buffer_state(buffer)->decoded, false);
+		WRITE_ONCE(buffer_state(buffer)->reference, false);
+		buffer_state(buffer)->slices = 0;
 		vb2_set_plane_payload(buffer, 0, pixel_size(&ctx->capture));
 	}
 	to_vb2_v4l2_buffer(buffer)->field = V4L2_FIELD_NONE;
@@ -342,6 +358,7 @@ static int queue_init(void *priv, struct vb2_queue *output, struct vb2_queue *ca
 		queue->dev = ctx->video->dev;
 		queue->supports_requests = !i;
 		queue->requires_requests = !i;
+		queue->subsystem_flags = !i ? VB2_V4L2_FL_SUPPORTS_M2M_HOLD_CAPTURE_BUF : 0;
 		ret = vb2_queue_init(queue);
 		if (ret)
 			return ret;
@@ -404,6 +421,7 @@ struct w202_video_references {
 	struct dma_buf *buffers[2][W202_H264_MAX_REFERENCES];
 	struct w202_vpu_iova maps[2][W202_H264_MAX_REFERENCES];
 	struct w202_h264_reference h264[2][W202_H264_MAX_REFERENCES];
+	struct w202_hevc_reference hevc[2][W202_HEVC_MAX_REFERENCES];
 };
 
 static int prepare_hevc_input(struct vb2_buffer *buffer, struct dma_buf *buf,
@@ -461,6 +479,8 @@ static void decode_hevc(struct w202_video_context *ctx)
 	struct codec_file *native = NULL;
 	struct dma_buf *input = NULL, *frame = NULL;
 	struct w202_vpu_iova input_map = {}, frame_map = {};
+	struct w202_video_references *references = NULL;
+	unsigned int i, list, active[2] = {};
 	u32 pixels = pixel_size(&ctx->capture);
 	int ret, ended;
 
@@ -475,6 +495,24 @@ static void decode_hevc(struct w202_video_context *ctx)
 	job.pps = ctx->hevc_pps->p_cur.p_hevc_pps;
 	job.slice = ctx->hevc_slice->p_cur.p_hevc_slice_params;
 	job.decode = ctx->hevc_decode->p_cur.p;
+	if (job.slice->num_entry_point_offsets) {
+		struct v4l2_ctrl_handler *handler =
+			v4l2_ctrl_request_hdl_find(request, &ctx->controls);
+
+		/* Optional controls must belong to this request, rather than
+		 * inheriting offsets from an earlier WPP picture. */
+		ret = -ENOENT;
+		if (handler) {
+			if (v4l2_ctrl_request_hdl_ctrl_find(handler,
+					V4L2_CID_STATELESS_HEVC_ENTRY_POINT_OFFSETS))
+				ret = 0;
+			v4l2_ctrl_request_hdl_put(handler);
+		}
+		if (ret)
+			goto done;
+		job.entry_point_offsets = ctx->hevc_entry_points->p_cur.p_u32;
+		job.num_entry_point_offsets = ctx->hevc_entry_points->elems;
+	}
 	input = buffer_dmabuf(&src->vb2_buf);
 	if (IS_ERR(input)) {
 		ret = PTR_ERR(input);
@@ -505,7 +543,62 @@ static void decode_hevc(struct w202_video_context *ctx)
 	job.input_capacity = vb2_plane_size(&src->vb2_buf, 0);
 	job.output_capacity = pixels;
 	job.auxiliary_capacity = auxiliary_size(&ctx->capture);
-	ret = w202_hevc_build_idr(&job, config);
+	if (job.slice->slice_type != V4L2_HEVC_SLICE_TYPE_I)
+		active[0] = (unsigned int)job.slice->num_ref_idx_l0_active_minus1 + 1;
+	if (job.slice->slice_type == V4L2_HEVC_SLICE_TYPE_B)
+		active[1] = (unsigned int)job.slice->num_ref_idx_l1_active_minus1 + 1;
+	if (active[0] > W202_HEVC_MAX_REFERENCES || active[1] > W202_HEVC_MAX_REFERENCES ||
+	    job.decode->num_active_dpb_entries > V4L2_HEVC_DPB_ENTRIES_NUM_MAX) {
+		ret = -EINVAL;
+		goto done;
+	}
+	if (active[0] || active[1]) {
+		references = kzalloc(sizeof(*references), GFP_KERNEL);
+		if (!references) {
+			ret = -ENOMEM;
+			goto done;
+		}
+	}
+	for (list = 0; list < 2; list++) {
+		if (active[list])
+			job.reference_lists[list] = references->hevc[list];
+		for (i = 0; i < active[list]; i++) {
+			struct vb2_queue *queue = v4l2_m2m_get_dst_vq(ctx->fh.m2m_ctx);
+			struct w202_hevc_reference *ref = &references->hevc[list][i];
+			struct vb2_buffer *buffer;
+			struct dma_buf *buf;
+			unsigned int index = list ? job.slice->ref_idx_l1[i] : job.slice->ref_idx_l0[i];
+
+			if (index >= job.decode->num_active_dpb_entries) {
+				ret = -EINVAL;
+				goto done;
+			}
+			buffer = vb2_find_buffer(queue, job.decode->dpb[index].timestamp);
+			if (!buffer || buffer == &dst->vb2_buf || buffer->index > 31 ||
+			    !READ_ONCE(buffer_state(buffer)->decoded) ||
+			    !READ_ONCE(buffer_state(buffer)->reference) ||
+			    vb2_plane_size(buffer, 0) < pixels + auxiliary_size(&ctx->capture)) {
+				ret = -EINVAL;
+				goto done;
+			}
+			buf = buffer_dmabuf(buffer);
+			if (IS_ERR(buf)) {
+				ret = PTR_ERR(buf);
+				goto done;
+			}
+			references->buffers[list][i] = buf;
+			if (buf == frame || buf == input) {
+				ret = -EINVAL;
+				goto done;
+			}
+			ref->address = 0x43000000 + (list * W202_HEVC_MAX_REFERENCES + i) * 0x400000;
+			ref->auxiliary_address = ref->address + pixels;
+			ref->capacity = pixels;
+			ref->auxiliary_capacity = auxiliary_size(&ctx->capture);
+			ref->frame_id = buffer->index;
+		}
+	}
+	ret = w202_hevc_build_ipb(&job, config);
 	if (ret)
 		goto done;
 	if (config->width != ctx->capture.width || config->height != ctx->capture.height ||
@@ -524,6 +617,10 @@ static void decode_hevc(struct w202_video_context *ctx)
 	ret = w202_vpu_native_import(native, input, &input_map);
 	if (!ret)
 		ret = w202_vpu_native_import(native, frame, &frame_map);
+	for (list = 0; !ret && list < 2; list++)
+		for (i = 0; !ret && i < active[list]; i++)
+			ret = w202_vpu_native_import(native, references->buffers[list][i],
+						     &references->maps[list][i]);
 	if (!ret)
 		ret = w202_vpu_native_validate_buffers(native, &input_map, &frame_map);
 	if (ret)
@@ -541,7 +638,19 @@ static void decode_hevc(struct w202_video_context *ctx)
 	job.output_capacity = min_t(u64, frame_map.size, pixels);
 	job.auxiliary_address = frame_map.iova_addr + pixels;
 	job.auxiliary_capacity = min_t(u64, frame_map.size - pixels, job.auxiliary_capacity);
-	ret = w202_hevc_build_idr(&job, config);
+	for (list = 0; list < 2; list++)
+		for (i = 0; i < active[list]; i++) {
+			struct w202_hevc_reference *ref = &references->hevc[list][i];
+			struct w202_vpu_iova *map = &references->maps[list][i];
+
+			if (map->size < pixels + auxiliary_size(&ctx->capture)) {
+				ret = -EINVAL;
+				goto done;
+			}
+			ref->address = map->iova_addr;
+			ref->auxiliary_address = map->iova_addr + pixels;
+		}
+	ret = w202_hevc_build_ipb(&job, config);
 	if (!ret)
 		ret = w202_vpu_native_execute(native, config, &ctx->abort);
 done:
@@ -554,10 +663,17 @@ done:
 		dma_buf_put(input);
 	if (frame)
 		dma_buf_put(frame);
+	if (references)
+		for (list = 0; list < 2; list++)
+			for (i = 0; i < W202_HEVC_MAX_REFERENCES; i++)
+				if (references->buffers[list][i])
+					dma_buf_put(references->buffers[list][i]);
+	kfree(references);
 	kfree(config);
 	if (ret)
 		dev_dbg(video->dev, "V4L2 HEVC job failed: %d\n", ret);
-	WRITE_ONCE(buffer_state(&dst->vb2_buf)->reference, !ret);
+	WRITE_ONCE(buffer_state(&dst->vb2_buf)->reference,
+		   !ret && (job.slice->nal_unit_type >= 16 || (job.slice->nal_unit_type & 1)));
 	WRITE_ONCE(buffer_state(&dst->vb2_buf)->decoded, !ret);
 	v4l2_m2m_buf_copy_metadata(src, dst, true);
 	src->sequence = ctx->sequence;
@@ -580,6 +696,7 @@ static void decode_work(struct work_struct *work)
 	struct dma_buf *input = NULL, *frame = NULL;
 	struct w202_vpu_iova input_map = {}, frame_map = {};
 	struct w202_video_references *references = NULL;
+	struct w202_video_buffer *picture = buffer_state(&dst->vb2_buf);
 	u32 pixels = pixel_size(&ctx->capture), rbsp;
 	unsigned int i, list, active[2] = {};
 	int ret, ended;
@@ -595,6 +712,21 @@ static void decode_work(struct work_struct *work)
 	job.pps = ctx->pps->p_cur.p_h264_pps;
 	job.slice = ctx->slice->p_cur.p_h264_slice_params;
 	job.decode = ctx->decode->p_cur.p_h264_decode_params;
+	job.slice_index = picture->slices;
+	if ((!picture->slices && job.slice->first_mb_in_slice) ||
+	    (picture->slices &&
+	     (job.slice->first_mb_in_slice <= picture->last_mb ||
+	      src->vb2_buf.timestamp != dst->vb2_buf.timestamp ||
+	      memcmp(job.sps, &picture->sps, sizeof(picture->sps)) ||
+	      memcmp(job.pps, &picture->pps, sizeof(picture->pps)) ||
+	      job.decode->frame_num != picture->frame_num ||
+	      job.decode->nal_ref_idc != picture->nal_ref_idc ||
+	      job.decode->top_field_order_cnt != picture->poc[0] ||
+	      job.decode->bottom_field_order_cnt != picture->poc[1] ||
+	      job.decode->flags != picture->picture_flags))) {
+		ret = -EINVAL;
+		goto done;
+	}
 	if (job.pps->flags & V4L2_H264_PPS_FLAG_SCALING_MATRIX_PRESENT) {
 		struct v4l2_ctrl_handler *handler =
 			v4l2_ctrl_request_hdl_find(request, &ctx->controls);
@@ -785,12 +917,29 @@ done:
 	kfree(config);
 	if (ret)
 		dev_dbg(video->dev, "V4L2 IPB job failed: %d\n", ret);
-	if (!ret)
-		WRITE_ONCE(buffer_state(&dst->vb2_buf)->reference, !!job.decode->nal_ref_idc);
-	WRITE_ONCE(buffer_state(&dst->vb2_buf)->decoded, !ret);
+	if (!ret) {
+		if (!picture->slices) {
+			picture->sps = *job.sps;
+			picture->pps = *job.pps;
+			picture->frame_num = job.decode->frame_num;
+			picture->nal_ref_idc = job.decode->nal_ref_idc;
+			picture->poc[0] = job.decode->top_field_order_cnt;
+			picture->poc[1] = job.decode->bottom_field_order_cnt;
+			picture->picture_flags = job.decode->flags;
+		}
+		picture->last_mb = job.slice->first_mb_in_slice;
+		picture->slices++;
+	} else {
+		/* An incomplete picture must leave the held queue as ERROR. */
+		src->flags &= ~V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF;
+	}
+	WRITE_ONCE(picture->decoded, !ret && !(src->flags & V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF));
+	WRITE_ONCE(picture->reference, picture->decoded && job.decode->nal_ref_idc);
 	v4l2_m2m_buf_copy_metadata(src, dst, true);
 	src->sequence = ctx->sequence;
-	dst->sequence = ctx->sequence++;
+	dst->sequence = ctx->sequence;
+	if (!(src->flags & V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF))
+		ctx->sequence++;
 	v4l2_ctrl_request_complete(request, &ctx->controls);
 	v4l2_m2m_buf_done_and_job_finish(video->m2m, ctx->fh.m2m_ctx,
 					ret ? VB2_BUF_STATE_ERROR : VB2_BUF_STATE_DONE);
@@ -883,6 +1032,9 @@ static int controls_init(struct w202_video_context *ctx)
 		{.id = V4L2_CID_STATELESS_HEVC_SLICE_PARAMS,
 		 .dims = {1}, .flags = V4L2_CTRL_FLAG_DYNAMIC_ARRAY},
 		{.id = V4L2_CID_STATELESS_HEVC_DECODE_PARAMS},
+		{.id = V4L2_CID_STATELESS_HEVC_ENTRY_POINT_OFFSETS,
+		 .min = 1, .max = W202_MAX_INPUT, .step = 1, .def = 1,
+		 .dims = {W202_HEVC_MAX_ENTRY_POINTS}, .flags = V4L2_CTRL_FLAG_DYNAMIC_ARRAY},
 		{.id = V4L2_CID_STATELESS_H264_DECODE_MODE,
 		 .max = V4L2_STATELESS_H264_DECODE_MODE_SLICE_BASED,
 		 .def = V4L2_STATELESS_H264_DECODE_MODE_SLICE_BASED},
@@ -908,6 +1060,7 @@ static int controls_init(struct w202_video_context *ctx)
 	struct v4l2_ctrl **controls[] = {
 		&ctx->sps, &ctx->pps, &ctx->slice, &ctx->decode, &ctx->scaling, &ctx->weights,
 		&ctx->hevc_sps, &ctx->hevc_pps, &ctx->hevc_slice, &ctx->hevc_decode,
+		&ctx->hevc_entry_points,
 	};
 	unsigned int i;
 	int ret;
@@ -1064,7 +1217,7 @@ struct w202_vpu_video *w202_vpu_video_register(struct device *dev)
 	ret = media_device_register(&video->media);
 	if (ret)
 		goto unregister_mc;
-	dev_info(dev, "experimental Baseline/Main IP Request API at /dev/video%d\n", video->video.num);
+	dev_info(dev, "H.264/HEVC Request API at /dev/video%d\n", video->video.num);
 	return video;
 unregister_mc:
 	v4l2_m2m_unregister_media_controller(video->m2m);

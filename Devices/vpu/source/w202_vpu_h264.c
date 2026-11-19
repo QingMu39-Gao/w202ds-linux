@@ -165,7 +165,7 @@ static int build_picture(const struct w202_h264_job *j, struct w202_vpu_config *
 			 V4L2_H264_SPS_FLAG_MB_ADAPTIVE_FRAME_FIELD)) ||
 	    p->num_slice_groups_minus1 || p->weighted_bipred_idc > 2 ||
 	    (s->profile_idc != 100 && (p->flags & V4L2_H264_PPS_FLAG_TRANSFORM_8X8_MODE)) ||
-	    (sl->slice_type != V4L2_H264_SLICE_TYPE_I && !inter) || sl->first_mb_in_slice ||
+	    (sl->slice_type != V4L2_H264_SLICE_TYPE_I && !inter) ||
 	    (d->flags & (V4L2_H264_DECODE_PARAM_FLAG_FIELD_PIC |
 			 V4L2_H264_DECODE_PARAM_FLAG_BOTTOM_FIELD)) ||
 	    (inter && ((d->flags & V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC) ||
@@ -173,8 +173,7 @@ static int build_picture(const struct w202_h264_job *j, struct w202_vpu_config *
 		       !!(d->flags & V4L2_H264_DECODE_PARAM_FLAG_BFRAME) != bidir)) ||
 	    (!inter && ((d->flags & V4L2_H264_DECODE_PARAM_FLAG_PFRAME) ||
 			(d->flags & V4L2_H264_DECODE_PARAM_FLAG_BFRAME) ||
-			!(d->flags & V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC) ||
-			d->frame_num || d->top_field_order_cnt != d->bottom_field_order_cnt)))
+			d->top_field_order_cnt != d->bottom_field_order_cnt)))
 		return -EOPNOTSUPP;
 	if (explicit_weights && !valid_weights(j->weights, active))
 		return -EINVAL;
@@ -205,8 +204,13 @@ static int build_picture(const struct w202_h264_job *j, struct w202_vpu_config *
 	y_size = (__u64)width * height;
 	qp = 26 + p->pic_init_qp_minus26 + sl->slice_qp_delta;
 	if (s->log2_max_frame_num_minus4 > 12 || s->pic_order_cnt_type > 2 ||
+	    sl->first_mb_in_slice >= mbs || j->slice_index > 511 ||
+	    (!!sl->first_mb_in_slice != !!j->slice_index) ||
 	    s->log2_max_pic_order_cnt_lsb_minus4 > 12 || s->max_num_ref_frames > 16 ||
-	    (!inter && !d->nal_ref_idc) || d->nal_ref_idc > 3 || qp < 0 || qp > 51 ||
+	    ((d->flags & V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC) &&
+	     (d->frame_num || !d->nal_ref_idc)) ||
+	    d->frame_num >= (1U << (s->log2_max_frame_num_minus4 + 4)) ||
+	    d->nal_ref_idc > 3 || qp < 0 || qp > 51 ||
 	    sl->colour_plane_id || sl->reserved ||
 	    (sl->flags & ~(bidir ? V4L2_H264_SLICE_FLAG_DIRECT_SPATIAL_MV_PRED : 0)) ||
 	    (cabac && sl->cabac_init_idc > 2) ||
@@ -258,9 +262,12 @@ static int build_picture(const struct w202_h264_job *j, struct w202_vpu_config *
 	emit(c, 0x1020, 0x11000004 | ((__u32)(inter + bidir) << 16));
 	emit(c, 0x1024, (width_mb & 255) | ((height_mb & 255) << 8));
 	emit(c, 0x1034, j->nalu_bytes);
-	emit(c, 0x103c, 0x80000000U | ((__u32)qp << 25) | mbs);
+	emit(c, 0x103c, 0x80000000U | ((__u32)qp << 25) |
+	     ((__u32)j->slice_index << 16) | mbs);
 	emit(c, 0x1040, 0);
 	emit(c, 0x1044, (s->profile_idc == 66 ? 0 : 0x80000000) |
+	     (sl->first_mb_in_slice % width_mb) | ((sl->first_mb_in_slice / width_mb) << 8) |
+	     (sl->first_mb_in_slice << 16) |
 	     ((p->flags & V4L2_H264_PPS_FLAG_SCALING_MATRIX_PRESENT) ? 0x20000000 : 0));
 	control = ((__u32)sl->disable_deblocking_filter_idc << 19) |
 		  ((__u32)!!(s->flags & V4L2_H264_SPS_FLAG_DIRECT_8X8_INFERENCE) << 12) |
@@ -379,7 +386,9 @@ int w202_h264_build_ipb(const struct w202_h264_job *job, struct w202_vpu_config 
 
 int w202_h264_build_idr(const struct w202_h264_job *job, struct w202_vpu_config *config)
 {
-	if (!job || !job->slice || job->slice->slice_type != V4L2_H264_SLICE_TYPE_I)
+	if (!job || !job->slice || !job->decode ||
+	    job->slice->slice_type != V4L2_H264_SLICE_TYPE_I ||
+	    !(job->decode->flags & V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC))
 		return -EOPNOTSUPP;
 	return w202_h264_build_ip(job, config);
 }

@@ -1,0 +1,713 @@
+{
+  "date_utc": "2026-11-15",
+  "baseline_commit": "5165671707357047c114b04c8c60366f1f82c8a9",
+  "kernel_release": "6.18.35-w202ds-desktop-00008-ga728e8d0586d",
+  "boot_id": "f1c08325-a323-4e11-b90a-4babcf93b8dc",
+  "codec_version": "w202ds-vpu-codec-v14-hevc-ipb",
+  "codec_sha256": "6f5a5bfe4f7cd1a2c0ae95d0304f0b595fbd7a91f82ed7a6cb1ca6e4f3032f37",
+  "bridge_commit": "4f60c51f7841dd74bb61c94a4ad31e630bbdab01",
+  "bridge_sha256": "8ea83a4ee09b0086bb79a5dd1c9606925362374e3a18d594af9cffc7c58462f4",
+  "build": {
+    "module": "passed",
+    "arm64_diagnostic_clients": 8,
+    "strict_diagnostic_build": "-Wall -Wextra -Werror",
+    "host_parameter_checks": "passed",
+    "independent_range_oracle_cases": 40009,
+    "clean_bridge_build": "passed"
+  },
+  "pixel_method": "FFmpeg VA-API hardware frames, hwdownload NV12; byte comparison against software decode",
+  "final_suites": {
+    "small": {
+      "raw_report_sha256": "9e2e9322a2c0d9a9a7fe0566c505979e13072bf4b0d544577beb49fb03274d7b",
+      "cases": {
+        "avc-open": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 2764800,
+          "expected": 2764800,
+          "frame_bytes": 92160,
+          "equal": true,
+          "output_sha256": "8132c1fd8cb1b166a2f8de97421f594950473fc76adfbc05a291f0bbd73ed4af",
+          "reference_sha256": "8132c1fd8cb1b166a2f8de97421f594950473fc76adfbc05a291f0bbd73ed4af",
+          "different_bytes": 0,
+          "equal_frames": 30,
+          "hardware_jobs": 30,
+          "interrupts": 30
+        },
+        "avc-slices": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 2764800,
+          "expected": 2764800,
+          "frame_bytes": 92160,
+          "equal": true,
+          "output_sha256": "d741df9dedadbd475ca0005e85329acfc3656c34422434801a07652e035bef72",
+          "reference_sha256": "d741df9dedadbd475ca0005e85329acfc3656c34422434801a07652e035bef72",
+          "different_bytes": 0,
+          "equal_frames": 30,
+          "hardware_jobs": 120,
+          "interrupts": 120
+        },
+        "hevc-simple": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 2764800,
+          "expected": 2764800,
+          "frame_bytes": 92160,
+          "equal": true,
+          "output_sha256": "da642d0a4a94e92496e00e01471a014688d35822b0d07dcd50f59b3b97769aa2",
+          "reference_sha256": "da642d0a4a94e92496e00e01471a014688d35822b0d07dcd50f59b3b97769aa2",
+          "different_bytes": 0,
+          "equal_frames": 30,
+          "hardware_jobs": 30,
+          "interrupts": 30
+        },
+        "hevc-ref1": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 2764800,
+          "expected": 2764800,
+          "frame_bytes": 92160,
+          "equal": true,
+          "output_sha256": "3e33a22b0e2c6e99153ab029d55c1b175e19211cfdc94930412678e7a7c2ed47",
+          "reference_sha256": "3e33a22b0e2c6e99153ab029d55c1b175e19211cfdc94930412678e7a7c2ed47",
+          "different_bytes": 0,
+          "equal_frames": 30,
+          "hardware_jobs": 30,
+          "interrupts": 30
+        },
+        "hevc-no-tmvp": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 2764800,
+          "expected": 2764800,
+          "frame_bytes": 92160,
+          "equal": true,
+          "output_sha256": "bd85e9cf668fac0d9d445ad3909468789d6353fe30306f39b83501f08c832f49",
+          "reference_sha256": "bd85e9cf668fac0d9d445ad3909468789d6353fe30306f39b83501f08c832f49",
+          "different_bytes": 0,
+          "equal_frames": 30,
+          "hardware_jobs": 30,
+          "interrupts": 30
+        },
+        "hevc-no-weight": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 2764800,
+          "expected": 2764800,
+          "frame_bytes": 92160,
+          "equal": true,
+          "output_sha256": "9375e02b9e2dbe921a8ece562c751b268105803db117eae9d58b6edbafbb15ed",
+          "reference_sha256": "9375e02b9e2dbe921a8ece562c751b268105803db117eae9d58b6edbafbb15ed",
+          "different_bytes": 0,
+          "equal_frames": 30,
+          "hardware_jobs": 30,
+          "interrupts": 30
+        },
+        "hevc-ip": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 2764800,
+          "expected": 2764800,
+          "frame_bytes": 92160,
+          "equal": true,
+          "output_sha256": "9375e02b9e2dbe921a8ece562c751b268105803db117eae9d58b6edbafbb15ed",
+          "reference_sha256": "9375e02b9e2dbe921a8ece562c751b268105803db117eae9d58b6edbafbb15ed",
+          "different_bytes": 0,
+          "equal_frames": 30,
+          "hardware_jobs": 30,
+          "interrupts": 30
+        },
+        "hevc-ipb": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 2764800,
+          "expected": 2764800,
+          "frame_bytes": 92160,
+          "equal": true,
+          "output_sha256": "c4a731679af3978002e8fa1a7048a825b9ed519e2759b3c19c80836603338a47",
+          "reference_sha256": "c4a731679af3978002e8fa1a7048a825b9ed519e2759b3c19c80836603338a47",
+          "different_bytes": 0,
+          "equal_frames": 30,
+          "hardware_jobs": 30,
+          "interrupts": 30
+        }
+      },
+      "end_state": {
+        "opens": "0",
+        "maps": "0",
+        "auto_released": "1345",
+        "copyout_rollbacks": "0",
+        "interrupts": "330",
+        "resets": "660",
+        "timeouts": "0",
+        "faults": "0",
+        "broken": "0",
+        "quarantined": "0",
+        "quarantined_maps": "0",
+        "powered": "0",
+        "live_regs": "0",
+        "clock": "256000000",
+        "pending": "00000000",
+        "last_irq": "0000104c",
+        "axi": "00000000",
+        "raw": "00000000",
+        "mmu": "00000000",
+        "native_started": "330",
+        "native_inflight": "0",
+        "native_cancel_before_irq": "0",
+        "native_cancel_dma_active": "0"
+      },
+      "restored": true
+    },
+    "matrix": {
+      "raw_report_sha256": "f7c017ef28d6d33fcde3d2fbfb3443f7c5c30a4628ddbb7f1cc9db92be665329",
+      "cases": {
+        "hevc-ctu64": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 4423680,
+          "expected": 4423680,
+          "frame_bytes": 92160,
+          "equal": true,
+          "output_sha256": "28cb9daf060b67b2e3e6f29e046d8c70c9cb401b3c9bcfa02cad4bf71c8bf956",
+          "reference_sha256": "28cb9daf060b67b2e3e6f29e046d8c70c9cb401b3c9bcfa02cad4bf71c8bf956",
+          "different_bytes": 0,
+          "equal_frames": 48,
+          "hardware_jobs": 48,
+          "interrupts": 48
+        },
+        "hevc-360-crop": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 16588800,
+          "expected": 16588800,
+          "frame_bytes": 345600,
+          "equal": true,
+          "output_sha256": "7f5047381c90ed48bf42b87e8228970ad537b71e3e1f3d9367a27cc30648b051",
+          "reference_sha256": "7f5047381c90ed48bf42b87e8228970ad537b71e3e1f3d9367a27cc30648b051",
+          "different_bytes": 0,
+          "equal_frames": 48,
+          "hardware_jobs": 48,
+          "interrupts": 48
+        },
+        "hevc-720": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 66355200,
+          "expected": 66355200,
+          "frame_bytes": 1382400,
+          "equal": true,
+          "output_sha256": "0c6b2e393ac198aca3cd76bdf0a1a9e0bc8802414a4b5a395af9c3fb012e212a",
+          "reference_sha256": "0c6b2e393ac198aca3cd76bdf0a1a9e0bc8802414a4b5a395af9c3fb012e212a",
+          "different_bytes": 0,
+          "equal_frames": 48,
+          "hardware_jobs": 48,
+          "interrupts": 48
+        },
+        "hevc-1080": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 149299200,
+          "expected": 149299200,
+          "frame_bytes": 3110400,
+          "equal": true,
+          "output_sha256": "78791fc3a026f32de511c1d2e8e301dc49541a688efd883779f42b7ea113cc01",
+          "reference_sha256": "78791fc3a026f32de511c1d2e8e301dc49541a688efd883779f42b7ea113cc01",
+          "different_bytes": 0,
+          "equal_frames": 48,
+          "hardware_jobs": 48,
+          "interrupts": 48
+        },
+        "avc-1080-slices": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 149299200,
+          "expected": 149299200,
+          "frame_bytes": 3110400,
+          "equal": true,
+          "output_sha256": "ab335c64b352d4a747c1994f48f2d8994c6d1baf1700582d964ed071f757f414",
+          "reference_sha256": "ab335c64b352d4a747c1994f48f2d8994c6d1baf1700582d964ed071f757f414",
+          "different_bytes": 0,
+          "equal_frames": 48,
+          "hardware_jobs": 192,
+          "interrupts": 192
+        }
+      },
+      "end_state": {
+        "opens": "0",
+        "maps": "0",
+        "auto_released": "1780",
+        "copyout_rollbacks": "0",
+        "interrupts": "384",
+        "resets": "768",
+        "timeouts": "0",
+        "faults": "0",
+        "broken": "0",
+        "quarantined": "0",
+        "quarantined_maps": "0",
+        "powered": "0",
+        "live_regs": "0",
+        "clock": "256000000",
+        "pending": "00000000",
+        "last_irq": "0000104c",
+        "axi": "00000000",
+        "raw": "00000000",
+        "mmu": "00000000",
+        "native_started": "384",
+        "native_inflight": "0",
+        "native_cancel_before_irq": "0",
+        "native_cancel_dma_active": "0"
+      },
+      "restored": true
+    },
+    "negative": {
+      "raw_report_sha256": "cd20e0dd9d7381778e2a87955153cc06f1fbc3a80f6e60b14e1051b307058164",
+      "cases": {
+        "hevc-ctu16": {
+          "exit": 251,
+          "negative": true,
+          "bytes": 0,
+          "expected": 4423680,
+          "frame_bytes": 92160,
+          "equal": false,
+          "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "reference_sha256": "53002c0301101853df25fa422073218dcf0f29794f974a25a0d22b63e40e926a",
+          "different_bytes": 4423680,
+          "equal_frames": 0,
+          "hardware_jobs": 0,
+          "interrupts": 0
+        },
+        "avc-open": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 2764800,
+          "expected": 2764800,
+          "frame_bytes": 92160,
+          "equal": true,
+          "output_sha256": "8132c1fd8cb1b166a2f8de97421f594950473fc76adfbc05a291f0bbd73ed4af",
+          "reference_sha256": "8132c1fd8cb1b166a2f8de97421f594950473fc76adfbc05a291f0bbd73ed4af",
+          "different_bytes": 0,
+          "equal_frames": 30,
+          "hardware_jobs": 30,
+          "interrupts": 30
+        }
+      },
+      "end_state": {
+        "opens": "0",
+        "maps": "0",
+        "auto_released": "128",
+        "copyout_rollbacks": "0",
+        "interrupts": "30",
+        "resets": "60",
+        "timeouts": "0",
+        "faults": "0",
+        "broken": "0",
+        "quarantined": "0",
+        "quarantined_maps": "0",
+        "powered": "0",
+        "live_regs": "0",
+        "clock": "256000000",
+        "pending": "00000000",
+        "last_irq": "0000104c",
+        "axi": "00000000",
+        "raw": "00000000",
+        "mmu": "00000000",
+        "native_started": "30",
+        "native_inflight": "0",
+        "native_cancel_before_irq": "0",
+        "native_cancel_dma_active": "0"
+      },
+      "restored": true
+    },
+    "ctu16-nosao": {
+      "raw_report_sha256": "3264a63b0c8931dbfb2c052bc3727d0ec6061cc58b3c6f2899dfcd8b464d222f",
+      "cases": {
+        "hevc-ctu16-nosao": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 2764800,
+          "expected": 2764800,
+          "frame_bytes": 92160,
+          "equal": true,
+          "output_sha256": "e7e162fb62cc669c3fb8061c0582a5504ea5408587ce48fe6e4b874ce0f19d7b",
+          "reference_sha256": "e7e162fb62cc669c3fb8061c0582a5504ea5408587ce48fe6e4b874ce0f19d7b",
+          "different_bytes": 0,
+          "equal_frames": 30,
+          "hardware_jobs": 30,
+          "interrupts": 30
+        }
+      },
+      "end_state": {
+        "opens": "0",
+        "maps": "0",
+        "auto_released": "143",
+        "copyout_rollbacks": "0",
+        "interrupts": "30",
+        "resets": "60",
+        "timeouts": "0",
+        "faults": "0",
+        "broken": "0",
+        "quarantined": "0",
+        "quarantined_maps": "0",
+        "powered": "0",
+        "live_regs": "0",
+        "clock": "256000000",
+        "pending": "00000000",
+        "last_irq": "0000104c",
+        "axi": "00000000",
+        "raw": "00000000",
+        "mmu": "00000000",
+        "native_started": "30",
+        "native_inflight": "0",
+        "native_cancel_before_irq": "0",
+        "native_cancel_dma_active": "0"
+      },
+      "restored": true
+    },
+    "wpp-small": {
+      "raw_report_sha256": "eccf6ac0bdc9a2cd5118369df5faae4be978c9387689b2b5ce53a6face229190",
+      "cases": {
+        "hevc-wpp": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 2764800,
+          "expected": 2764800,
+          "frame_bytes": 92160,
+          "equal": true,
+          "output_sha256": "a7079a8da36fb522e7fcb0629089bcf3bb04187ba91a7f004292da314e3b33f3",
+          "reference_sha256": "a7079a8da36fb522e7fcb0629089bcf3bb04187ba91a7f004292da314e3b33f3",
+          "different_bytes": 0,
+          "equal_frames": 30,
+          "hardware_jobs": 30,
+          "interrupts": 30
+        }
+      },
+      "end_state": {
+        "opens": "0",
+        "maps": "0",
+        "auto_released": "143",
+        "copyout_rollbacks": "0",
+        "interrupts": "30",
+        "resets": "60",
+        "timeouts": "0",
+        "faults": "0",
+        "broken": "0",
+        "quarantined": "0",
+        "quarantined_maps": "0",
+        "powered": "0",
+        "live_regs": "0",
+        "clock": "256000000",
+        "pending": "00000000",
+        "last_irq": "0000104c",
+        "axi": "00000000",
+        "raw": "00000000",
+        "mmu": "00000000",
+        "native_started": "30",
+        "native_inflight": "0",
+        "native_cancel_before_irq": "0",
+        "native_cancel_dma_active": "0"
+      },
+      "restored": true
+    },
+    "wpp-site-matrix": {
+      "raw_report_sha256": "aace5679207a887dd8cda27c5cf26aa5a414a44fb42e24ebed5f786a8b7db5e5",
+      "cases": {
+        "hevc-wpp-360": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 16588800,
+          "expected": 16588800,
+          "frame_bytes": 345600,
+          "equal": true,
+          "output_sha256": "12af5f0ac20fb7203f5874b6ddd1b675dcfa9b6307b28efcd946f552c387d9e5",
+          "reference_sha256": "12af5f0ac20fb7203f5874b6ddd1b675dcfa9b6307b28efcd946f552c387d9e5",
+          "different_bytes": 0,
+          "equal_frames": 48,
+          "hardware_jobs": 48,
+          "interrupts": 48
+        },
+        "hevc-wpp-1080": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 149299200,
+          "expected": 149299200,
+          "frame_bytes": 3110400,
+          "equal": true,
+          "output_sha256": "17e03a9ae3c48c6d4b57205f8542a1d5919f1fc275eaf450305f68774ec0e5ec",
+          "reference_sha256": "17e03a9ae3c48c6d4b57205f8542a1d5919f1fc275eaf450305f68774ec0e5ec",
+          "different_bytes": 0,
+          "equal_frames": 48,
+          "hardware_jobs": 48,
+          "interrupts": 48
+        },
+        "site-hevc-wpp": {
+          "exit": 0,
+          "negative": false,
+          "bytes": 279936000,
+          "expected": 279936000,
+          "frame_bytes": 3110400,
+          "equal": true,
+          "output_sha256": "54dcb0218c778855f946a71fef5d9225b266951b097da389baf1ecb2f854bd7f",
+          "reference_sha256": "54dcb0218c778855f946a71fef5d9225b266951b097da389baf1ecb2f854bd7f",
+          "different_bytes": 0,
+          "equal_frames": 90,
+          "hardware_jobs": 90,
+          "interrupts": 90
+        }
+      },
+      "end_state": {
+        "opens": "0",
+        "maps": "0",
+        "auto_released": "1007",
+        "copyout_rollbacks": "0",
+        "interrupts": "186",
+        "resets": "372",
+        "timeouts": "0",
+        "faults": "0",
+        "broken": "0",
+        "quarantined": "0",
+        "quarantined_maps": "0",
+        "powered": "0",
+        "live_regs": "0",
+        "clock": "256000000",
+        "pending": "00000000",
+        "last_irq": "0000104c",
+        "axi": "00000000",
+        "raw": "00000000",
+        "mmu": "00000000",
+        "native_started": "186",
+        "native_inflight": "0",
+        "native_cancel_before_irq": "0",
+        "native_cancel_dma_active": "0"
+      },
+      "restored": true
+    }
+  },
+  "totals": {
+    "equal_frames": 756,
+    "hardware_jobs": 990,
+    "interrupts": 990
+  },
+  "limits": [
+    "Progressive 8-bit 4:2:0 only; coded dimensions bounded to 1920x1088",
+    "H.264 field, FMO, long-term references and 10-bit rejected",
+    "HEVC single independent slice only; tiles, scaling lists, PCM and 10-bit rejected",
+    "CTU16 with SAO rejected after observed chroma-corner mismatches; CTU16 without SAO qualified",
+    "HEVC long-term reference registers implemented, but no hardware pixel qualification in this stage",
+    "Reference-list maxima are control limits, not exhaustive pixel qualification",
+    "Early-export layout mismatch uses a CPU NV12 copy after hardware completion",
+    "No sustained 1080p60 or long-duration stability qualification",
+    "V9 cancellation and physical-alias kernel tests were not rerun in V14"
+  ],
+  "deployment": {
+    "persistent_install": false,
+    "firmware_flashed": false,
+    "final_suites_restore_disk_module": true,
+    "browser_uses_temporary_module": true
+  },
+  "prior_failures_preserved": [
+    "Temporal-MVP and MVD-L1-zero register bits were swapped; corrected to bit6 and bit2",
+    "Early B-picture candidate stopped responding; no fault IRQ established an MMU diagnosis; normal reboot restored the VPU",
+    "Experimental compact UV addressing produced chroma errors and was reverted",
+    "CTU16 SAO produced chroma-corner mismatches and is now explicitly rejected"
+  ],
+  "excluded_test_runs": [
+    "The first WPP and non-WPP matrices overlapped module replacement; counters were invalid and the second saw FileNotFoundError. Raw reports retained; both were rerun serially with an exclusive flock.",
+    "Before WPP support, the original Bilibili HEVC stream was rejected before hardware launch.",
+    "The first AVC switch triggered a site preference migration to recommended AV1 software; excluded from AVC qualification."
+  ],
+  "bridge_mock_tests": [
+    {
+      "command": [
+        "./hevc-parser"
+      ],
+      "exit": 0
+    },
+    {
+      "command": [
+        "./surface-probe"
+      ],
+      "exit": 0
+    },
+    {
+      "command": [
+        "./early-export-backing"
+      ],
+      "exit": 0
+    },
+    {
+      "command": [
+        "./hevc-reftrace",
+        "match-generic"
+      ],
+      "exit": 0
+    },
+    {
+      "command": [
+        "./hevc-reftrace",
+        "slices"
+      ],
+      "exit": 0
+    },
+    {
+      "command": [
+        "./hevc-reftrace",
+        "many-slices"
+      ],
+      "exit": 0
+    },
+    {
+      "command": [
+        "./hevc-reftrace",
+        "failure"
+      ],
+      "exit": 0
+    }
+  ],
+  "full_upstream_meson_suite_run": false,
+  "code_sha256": {
+    "source/w202_vpu_codec_main.c": "547d0a72dae1a133e1e68858a5785c8b44e5dd420e950fd5203832f6579a9bd1",
+    "source/w202_vpu_h264.c": "36809b511728e5c48deb9bc8df167cc3371a0aca304728b77516d19a626753ae",
+    "source/w202_vpu_h264.h": "57188270d71f65c2cf8e8993385eecdb3eeef97b256594aba03fa9f35c2c200e",
+    "source/w202_vpu_hevc.c": "f539968d96967a3f7fa650dd1cd474ea8ec5cc8f17c94f08b3caa7503dd2681f",
+    "source/w202_vpu_hevc.h": "bfb195232f47839443bff75076ea4adc1006be8813592002827e04f5636179b1",
+    "source/w202_vpu_video.c": "11f26de177abfdc66a9bc352e21f026240493097005defb9a7e0b06ced32f94b",
+    "userspace/build-vaapi.py": "17ea0e83b37880fa9ac14832adf38706fe7da7288c10ffe3843edb2e7ea3c9d3",
+    "userspace/Makefile": "0dcd3bae8afdbfb6cc911ff38b0e24f7f2dfffd6f5396c75ebafa7c8420433df",
+    "userspace/source/w202-vpu-params-test.c": "49597f3594d47f024db3cf6110af1209cf78896e9e67c2605eca4395f63d715c",
+    "userspace/source/libva-v4l2-request-w202-profile.patch": "ec596bb4b52ef1dbc8dc968ead48053804facb05e8c020038e6e863ba8bb1fab",
+    "userspace/source/libva-v4l2-request-w202-layout.patch": "16149a89584706c5879bad2253cecce3f9e3f6d736d5ea6b5c3056e438f6150f"
+  },
+  "bilibili_chrome": {
+    "chrome_version": "157.0.8103.78",
+    "test_profile": true,
+    "original_profile_modified": false,
+    "logged_in": true,
+    "cases": {
+      "website_hevc": {
+        "raw_report_sha256": "395c47f519debd3f56f7f994bba1133a2da3232b63d996dc4937ccfa9c09c7eb",
+        "path": "Bilibili website player",
+        "bvid": "BV1884g6mE8K",
+        "codec": "hevc",
+        "resolution": "1920x1080",
+        "decoder": "VaapiVideoDecoder",
+        "platform": true,
+        "sample_count": 15,
+        "window_seconds": 35.083,
+        "media_start_seconds": 9.984286,
+        "media_end_seconds": 45.014978,
+        "video_frame_counter_delta": 1050,
+        "dropped_frame_counter_delta": 0,
+        "corrupted_frame_counter_delta": 0,
+        "hardware_jobs_delta": 1056,
+        "interrupts_delta": 1056,
+        "faults": 0,
+        "timeouts": 0,
+        "decode_errors": 0,
+        "audio_decoder": "FFmpegAudioDecoder",
+        "complete_video_playthrough": false,
+        "pixel_comparison": "separate FFmpeg hwdownload qualification"
+      },
+      "website_avc": {
+        "raw_report_sha256": "dab4c28dd6378c905613698ff6b7a9611af739f90c1820165aaaa59014250190",
+        "path": "Bilibili website player",
+        "bvid": "BV1884g6mE8K",
+        "codec": "h264",
+        "resolution": "1920x1080",
+        "decoder": "VaapiVideoDecoder",
+        "platform": true,
+        "sample_count": 5,
+        "window_seconds": 10.307,
+        "media_start_seconds": 1.727465,
+        "media_end_seconds": 11.926349,
+        "video_frame_counter_delta": 307,
+        "dropped_frame_counter_delta": 0,
+        "corrupted_frame_counter_delta": 0,
+        "hardware_jobs_delta": 310,
+        "interrupts_delta": 310,
+        "faults": 0,
+        "timeouts": 0,
+        "decode_errors": 0,
+        "audio_decoder": "FFmpegAudioDecoder",
+        "complete_video_playthrough": false,
+        "pixel_comparison": "separate FFmpeg hwdownload qualification"
+      },
+      "native_hevc": {
+        "raw_report_sha256": "56201bd9d88d54f40cfbd07e06437f59ac9cfa9661d3309f79b6b04e52e074e8",
+        "path": "Native HTML video of original Bilibili HEVC URL; muted, video only",
+        "bvid": "BV1AF4g6MEX9",
+        "codec": "hevc",
+        "resolution": "1920x1080",
+        "decoder": "VaapiVideoDecoder",
+        "platform": true,
+        "sample_count": 15,
+        "window_seconds": 33.423,
+        "media_start_seconds": 2.0168,
+        "media_end_seconds": 35.4393,
+        "video_frame_counter_delta": 898,
+        "dropped_frame_counter_delta": 0,
+        "corrupted_frame_counter_delta": 0,
+        "hardware_jobs_delta": 878,
+        "interrupts_delta": 878,
+        "faults": 0,
+        "timeouts": 0,
+        "decode_errors": 0,
+        "audio_decoder": null,
+        "complete_video_playthrough": false,
+        "pixel_comparison": "separate FFmpeg hwdownload qualification"
+      }
+    },
+    "site_selection_fix": {
+      "cache_key": "bpcc_persisted",
+      "action": "backed up and invalidated 31 stale HEVC entries; the website recomputed support as true",
+      "manual_capability_override": false,
+      "final_preference": "HEVC",
+      "one_time_preference_migration": "first AVC switch reset to recommended and used AV1 software; excluded; subsequent AVC selection persisted"
+    },
+    "limits": [
+      "Short measured windows only; not a long-duration or 1080p60 qualification",
+      "Browser frame counters do not measure physical panel smoothness",
+      "Native HEVC diagnostic has no audio; website cases also used the normal AAC audio path",
+      "GPU sandbox exception and VA-API flags apply to the test Chrome process",
+      "Codec module and bridge remain temporary; not persistently installed"
+    ],
+    "final_website_state": {
+      "loggedIn": true,
+      "preference": 1,
+      "handoff": 2,
+      "codecMap": [
+        [
+          80,
+          12
+        ],
+        [
+          64,
+          12
+        ],
+        [
+          32,
+          12
+        ],
+        [
+          16,
+          12
+        ]
+      ],
+      "video": {
+        "time": 70.90006,
+        "duration": 70.90006,
+        "width": 1920,
+        "height": 1080,
+        "paused": true,
+        "ended": true,
+        "total": 767,
+        "dropped": 0,
+        "corrupted": 0,
+        "muted": false,
+        "volume": 1
+      }
+    },
+    "final_website_state_sha256": "a20b75be17eed128786dc7207811325b214b13521250f505ce3220672eba7b4f"
+  }
+}

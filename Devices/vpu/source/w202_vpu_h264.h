@@ -26,6 +26,7 @@ struct w202_h264_job {
 	/* NAL size after removal of emulation-prevention bytes, including the
 	 * NAL header; OUTPUT input_bytes still describes the original EBSP. */
 	__u32 nalu_bytes;
+	__u16 slice_index;
 	/* Legacy diagnostics: address/metadata for one active L0 entry.
 	 * Its position in slice.ref_pic_list0 selects decode.dpb; frame_id is the
 	 * stable identity stored in motion-vector reference metadata (0..31).

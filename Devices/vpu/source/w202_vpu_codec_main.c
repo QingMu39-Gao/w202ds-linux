@@ -124,8 +124,13 @@ static irqreturn_t codec_irq(int irq, void *data)
 	c->last_irq = status | (mmu << 16);
 	spin_unlock_irqrestore(&c->irq_lock, flags);
 	atomic_inc(&c->interrupts);
-	if (mmu || (status & (BIT(0) | BIT(4) | BIT(5) | BIT(13) | BIT(14) | BIT(15))))
+	if (mmu || (status & (BIT(0) | BIT(4) | BIT(5) | BIT(13) | BIT(14) | BIT(15)))) {
 		atomic_inc(&c->faults);
+		dev_err_ratelimited(c->misc.parent,
+			"decoder fault irq=%08x mmu=%08x address=%08x axi=%08x position=%08x\n",
+			status, mmu, readl(c->base + 0xac),
+			readl(c->base + REG_AXI_STATUS), readl(c->base + 0x1120));
+	}
 	wake_up_interruptible(&c->wait);
 	return IRQ_HANDLED;
 }
@@ -424,6 +429,12 @@ int w202_vpu_native_execute(struct codec_file *ctx,
 	value = READ_ONCE(c->pending);
 	return (value & 4) && !(value & 0xffffe031) ? 0 : -EIO;
 bsm_timeout:
+	dev_dbg(c->misc.parent,
+		"native timeout codec=%u ret=%d irq=%08x mask=%08x mmu=%08x axi=%08x bsm=%08x start=%08x\n",
+		config->codec, ret, readl(c->base + REG_INT_RAW),
+		readl(c->base + REG_INT_MASK), readl(c->base + REG_MMU_RAW),
+		readl(c->base + REG_AXI_STATUS), readl(c->base + 0x8018),
+		readl(c->base + 0x1028));
 	atomic_inc(&c->timeouts);
 	return ret;
 }
@@ -767,4 +778,4 @@ module_platform_driver(codec_driver);
 MODULE_IMPORT_NS("DMA_BUF");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("W202DS native decoder ioctl, reset, IRQ and standard DMA-BUF bridge");
-MODULE_VERSION("w202ds-vpu-codec-v13-v4l2-multiref");
+MODULE_VERSION("w202ds-vpu-codec-v14-hevc-ipb");

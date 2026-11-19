@@ -2,6 +2,12 @@
 
 本目录直接维护 W202DS 当前使用的驱动和公共头文件。
 
+当前 V14 新增 H.264 非 IDR I 和多 slice、HEVC Main 8-bit 单 slice I/P/B 和 WPP。
+2026-11-15 最终硬件回归 756 帧逐字节匹配软件参考，990 次作业／IRQ 完成，
+零故障／超时。HEVC 的 tiles、scaling lists、PCM、多个 slice 和 10-bit
+仍拒绝；CTU16 仅关闭 SAO 通过。长期参考映射有实现，尚无本轮像素资格测试。
+具体语法、导出布局兼容与验证范围见 [v4l2.md](v4l2.md)。下面的 V9～V13 数字均为历史记录。
+
 只读任务占用统计接口及口径见 [utilization.md](utilization.md)。
 
 | 源码 | 职责 | 输出模块 |
@@ -11,7 +17,8 @@
 | `w202_vpu_codec_main.c`、`w202_vpu_buffers.c` | `/dev/sprd_vsp`、IRQ、任务生命周期和 DMA-BUF | `w202_vpu_codec.ko` |
 | `w202_vpu_ranges.c` | 原生作业的 SG 物理范围校验，防止不同导出对象别名绕过输入／输出／参考隔离 | 编入 codec 和 map-test |
 | `w202_vpu_h264.c`、`w202_vpu_h264_cabac.h` | 标准 H.264 controls 到寄存器的实验后端，Baseline/Main/High IDR/P、Main/High 参考／非参考 B、spatial／temporal direct、加权、每列表至多 16 项短期参考、CAVLC/CABAC、8×8 和 scaling | 编入 codec |
-| `w202_vpu_video.c`、`w202_vpu_native.h` | V4L2/vb2/Media Request 和共享硬件资源接口，完整活动列表引用与 DMA 映射 | 编入 codec；V13 Request 及 B 站 High 验证通过 |
+| `w202_vpu_hevc.c`、`w202_vpu_hevc_cabac.h` | HEVC controls 到寄存器，Main 8-bit I/P/B、WPP、CABAC、TMVP、加权和参考地址／POC | 编入 codec |
+| `w202_vpu_video.c`、`w202_vpu_native.h` | V4L2/vb2/Media Request、H.264 HOLD_CAPTURE_BUF、H.264／HEVC 活动列表和 DMA 映射 | 编入 codec |
 | `tests/` | 寄存器探针、DMA 和缓冲映射诊断 | `w202_vpu_probe.ko`、`w202_vpu_dma_test.ko`、`w202_vpu_map_test.ko` |
 
 公共驱动接口在 `w202_vpu.h`，缓冲接口在 `w202_vpu_buffers.h` 和
@@ -89,14 +96,14 @@ V9 接受客户端添加的共同正负 POC 原点，IDR 的 top/bottom POC 相�
 首次 V3 的 S_FMT 空 priv Oops 和 V7 缺回调的 vb2 WARNING 是已保留的历史失败，
 当前新 boot 的 V9 已能正常使用视频节点；不能再套用旧 boot 的禁止探测状态。
 
-当前支持 progressive 8-bit 4:2:0、Baseline/Main/High、单 slice IDR/P/B、多短期参考和加权，
+V13 支持 progressive 8-bit 4:2:0、Baseline/Main/High、单 slice IDR/P/B、多短期参考和加权，
 Main/High B 支持参考／非参考及 spatial／temporal direct；High 支持 8×8 和自定义 scaling。
-控制上限每列表 16 项，本轮像素覆盖 L0 16 项／L1 2 项。多 slice、field、long-term、
-非 IDR I 和 10-bit 仍拒绝。既有私有资源桥的 IDR、IP 和 IPB 像素结果
+控制上限每列表 16 项，该轮像素覆盖 L0 16 项／L1 2 项。当时多 slice、field、long-term、
+非 IDR I 和 10-bit 拒绝；V14 的扩展与限制见文首。既有私有资源桥的 IDR、IP 和 IPB 像素结果
 保留为对照；450 帧原厂路径测试与本轮标准接口测试分别记录。
 
 V9 候选、源码输入哈希和脚本已保存到研究项目
 `archive/linux/vpu-v4l2-20261107-v2/evidence/request-lifecycle-v9/`；
 32 项、取消恢复和 FFmpeg 成功报告在归档 `evidence/primary/`，
 统一验收报告为 `evidence/qualification-v9.json`。设备测试目录和独立浏览器 profile
-已清理；本轮内存为 V13，生产磁盘仍为 V2，重启后回到 V2，A/B 固件尚未替换。
+已清理；V13 验证结束当时内存为 V13、生产磁盘为 V2，A/B 固件未替换。
