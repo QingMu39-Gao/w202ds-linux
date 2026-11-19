@@ -1,0 +1,109 @@
+diff --git a/app/sprdboot/sprdboot.c b/app/sprdboot/sprdboot.c
+index 69f88e2941c75e18fcb058a77beb82e618566f97..fc11380d79baa26d3a4ace6e7cd97315337d9b13 100755
+--- a/app/sprdboot/sprdboot.c
++++ b/app/sprdboot/sprdboot.c
+@@ -99,6 +99,8 @@ static const char *g_mode_str[CMD_MAX_MODE+1] = {
+ 	"MAX_MODE",
+ };
+ 
++const char *g_current_boot_mode_label = "MODE_DETECTION";
++
+ CBOOT_FUNC s_boot_func_array[CHECK_BOOTMODE_FUN_NUM] = {
+ 	/* 0 get mode from chipram_env*/
+ 	get_mode_from_chipram_env,
+@@ -206,6 +208,7 @@ void low_power_charge(int temp_status)
+ 	int32_t vbat_vol;
+ 	enum sprd_adapter_type charger_type;
+ 
++	g_current_boot_mode_label = "CHARGE_MODE";
+ 	charger_type = sprdchg_charger_is_adapter();
+ 	vbat_vol = sprdfgu_read_vbat_vol();
+ 	if((charger_type != ADP_TYPE_SDP && charger_type != ADP_TYPE_UNKNOW) || vbat_vol > LOWPOWER_LOGO_VOL ) {
+@@ -301,6 +304,7 @@ boot_mode_enum_type get_mode_from_bat_low(void)
+ 				low_power_charge(temp_status);
+ 			} else {
+ 				dprintf(INFO, "cboot:low battery and abnormal temerature,shutdown\n");
++				g_current_boot_mode_label = "POWER_DOWN_DEVICE";
+ 				logo_display(LOGO_LOW_VOL, BACKLIGHT_ON, LCD_DISPLAY_ENABLE);
+ 				mdelay(LOW_VOL_DISPLAY_DELAY_TIME);
+ 				return CMD_POWER_DOWN_DEVICE;
+@@ -318,6 +322,7 @@ boot_mode_enum_type get_mode_from_bat_low(void)
+ 				low_power_charge(temp_status);
+ 			} else {
+ 				dprintf(INFO, "cboot:low battery and shutdown\n");
++				g_current_boot_mode_label = "POWER_DOWN_DEVICE";
+ 				logo_display(LOGO_LOW_VOL, BACKLIGHT_ON, LCD_DISPLAY_ENABLE);
+ 				mdelay(LOW_VOL_DISPLAY_DELAY_TIME);
+ 				return CMD_POWER_DOWN_DEVICE;
+@@ -642,7 +647,11 @@ int sprd_boot(void)
+ 	}
+ 
+ 	board_boot_mode_regist(boot_mode_array);
+-	dprintf(ALWAYS,"enter boot mode g_mode_str[%d]:%s\n", bootmode, g_mode_str[bootmode]);
++	if ((unsigned)bootmode <= CMD_MAX_MODE && g_mode_str[bootmode])
++		g_current_boot_mode_label = g_mode_str[bootmode];
++	else
++		g_current_boot_mode_label = "UNKNOWN_MODE";
++	dprintf(ALWAYS,"enter boot mode g_mode_str[%d]:%s\n", bootmode, g_current_boot_mode_label);
+ 
+ #ifdef CONFIG_MMC_POWP_SUPPORT
+ 	if (get_boot_role() == BOOTLOADER_MODE_LOAD)
+diff --git a/platform/sprd_shared/driver/video/common/splash.c b/platform/sprd_shared/driver/video/common/splash.c
+index e355da22d97317fde797219d235c543d7b337fd0..13262798c7dc98401651571a37ecc3aae8cc8392 100755
+--- a/platform/sprd_shared/driver/video/common/splash.c
++++ b/platform/sprd_shared/driver/video/common/splash.c
+@@ -23,6 +23,8 @@
+ #include <sprd_common.h>
+ #include <sprd_common_rw.h>
+ 
++extern void logo_display_boot_mode(void);
++
+ int splash_screen_prepare(char *logo_part_name, u8 *addr)
+ {
+ 	size_t size ;
+@@ -62,7 +64,9 @@ int lcd_splash(char *logo_part_name)
+ 			return ret;
+ 	}
+ 
+-	return bmp_display(addr, x, y);
++	ret = bmp_display(addr, x, y);
++	logo_display_boot_mode();
++	return ret;
+ }
+ 
+ int splash_get_bpix(char *logo_part_name)
+diff --git a/platform/sprd_shared/driver/video/sprd/sprd_main.c b/platform/sprd_shared/driver/video/sprd/sprd_main.c
+index 8ab788316f21c66841d9feb01c20e902f8aab8d9..8385880f2f5e1dfafc85c0d2b5c44b05ee0a2497 100644
+--- a/platform/sprd_shared/driver/video/sprd/sprd_main.c
++++ b/platform/sprd_shared/driver/video/sprd/sprd_main.c
+@@ -38,6 +38,7 @@ typedef unsigned long long fdt_addr_t;
+ typedef unsigned long long fdt_size_t;
+ 
+ extern const char* g_env_bootmode;
++extern const char *g_current_boot_mode_label;
+ extern int gunzip(void *, int, unsigned char *, unsigned long *);/* external/gzip/gunzip.c */
+ 
+ int logo_index = 0;
+@@ -157,6 +158,13 @@ int logo_mem_init(void)
+ 	return 0;
+ }
+ 
++void logo_display_boot_mode(void)
++{
++	lcd_position_cursor(0, 0);
++	lcd_printf("LK MODE: %s\n", g_current_boot_mode_label ?
++		g_current_boot_mode_label : "UNKNOWN_MODE");
++}
++
+ void logo_display(int index, int backlight_value, int lcd_on)
+ {
+ 	extern uint32_t lk_start_time;
+@@ -178,6 +186,8 @@ void logo_display(int index, int backlight_value, int lcd_on)
+ 	}
+ 
+ 	set_backlight(backlight_value);
++	if (lcd_on && enter_sysdump_flag)
++		logo_display_boot_mode();
+ 	backlight_on_time = SCI_GetTickCount();
+ 	lcd_init_time= backlight_on_time - lcd_init_time;
+ 	lk_consume_time = backlight_on_time - lk_start_time;
