@@ -76,9 +76,12 @@ def package(run, output, lk, platform, baseline, revision, *, fastboot=True):
                         'hardware_tested': False}}
 
 
-def build_ramlk(*, debug=False):
+def build_ramlk(*, debug=False, temporary_root=None):
     """Rebuild disposable RAMLK input; retain it for this process lifetime."""
-    temporary = tempfile.TemporaryDirectory(prefix='w202ds-ramlk-')
+    if temporary_root is not None:
+        temporary_root = Path(temporary_root)
+        temporary_root.mkdir(parents=True, exist_ok=True)
+    temporary = tempfile.TemporaryDirectory(prefix='w202ds-ramlk-', dir=temporary_root)
     atexit.register(temporary.cleanup)
     output = Path(temporary.name)/'ramlk'
     script = Path(__file__).resolve().parents[2]/'lk/legacy-buildchain/build.py'

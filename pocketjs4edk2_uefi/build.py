@@ -129,7 +129,7 @@ def main():
         p.error('--output must be outside the UI directory')
     lk_generated = None
     if a.lk_baseline is None or a.lk_debug:
-        lk_generated = CONTAINER['build_ramlk'](debug=a.lk_debug)
+        lk_generated = CONTAINER['build_ramlk'](debug=a.lk_debug, temporary_root=a.output.parent/'tmp')
     if a.lk_baseline is None:
         a.lk_baseline = lk_generated['image']
     lock = json.loads((ROOT/'inputs.lock.json').read_text())
@@ -140,6 +140,10 @@ def main():
     debug_tools = CONTAINER['export_debug_tools'](LK, lk_generated['output'], a.lk_baseline,
                                                   a.output) if a.lk_debug else []
     env = dict(os.environ, PJB_JOBS=str(a.jobs), PYTHONDONTWRITEBYTECODE='1')
+    for key, name in [('TMPDIR', 'tmp'), ('XDG_CACHE_HOME', 'cache')]:
+        (a.output/name).mkdir()
+        env[key] = str(a.output/name)
+    env.setdefault('CARGO_HOME', str(a.output.parent/'cargo'))
     logs = a.output/'logs'
     logs.mkdir()
 

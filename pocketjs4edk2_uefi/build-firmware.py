@@ -68,7 +68,7 @@ def main():
         try:
             packaging_inputs = load_inputs(a.inputs)
             if packaging_inputs['lk_baseline'] is None or a.lk_debug:
-                lk_generated = CONTAINER['build_ramlk'](debug=a.lk_debug)
+                lk_generated = CONTAINER['build_ramlk'](debug=a.lk_debug, temporary_root=out.parent/'tmp')
             if packaging_inputs['lk_baseline'] is None:
                 packaging_inputs['lk_baseline'] = lk_generated['image']
             packaging_inputs['lk_features'] = CONTAINER['validate_inputs'](
@@ -83,6 +83,10 @@ def main():
                                                   packaging_inputs['lk_baseline'], out) if a.lk_debug else []
     (out/'logs').mkdir()
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', PJB_JOBS=str(a.jobs))
+    for key, name in [('TMPDIR', 'tmp'), ('XDG_CACHE_HOME', 'cache')]:
+        (out/name).mkdir()
+        env[key] = str(out/name)
+    env.setdefault('CARGO_HOME', str(out.parent/'cargo'))
     env.update(W202_STORAGE_TEST='FALSE', W202_BOARD_SERVICES='TRUE', W202_TOUCH_TEST='TRUE',
                W202_LK_FASTBOOT='TRUE' if a.fastboot else 'FALSE',
                W202_TOUCH_DIRECT='FALSE', W202_TOUCH_RELOAD='TRUE', W202_ANDROID_BOOT_TEST='FALSE',
