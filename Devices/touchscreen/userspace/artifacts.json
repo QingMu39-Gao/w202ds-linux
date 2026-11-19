@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "base": "project",
+  "rootfs": "output/userspace/touchscreen/rootfs",
+  "required": [
+    "usr/lib/firmware/Himax_firmware_guoxian.bin"
+  ],
+  "required_sha256": {
+    "usr/lib/firmware/Himax_firmware_guoxian.bin": "bdcd327d48628dd703b1d0a8ea778ef7f7aacd7beb227efdb78ea788928f0156"
+  }
+}

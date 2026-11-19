@@ -4,8 +4,8 @@ USERSPACE_DEVICES := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 OUT ?= $(USERSPACE_DEVICES)/../output/userspace
 PYTHON ?= python3
 HOSTCC ?= cc
-COMPONENTS ?= audio camera charging drm hall keyboard modem sensorhub usb3 wcn
-SUPPORTED := audio camera charging drm hall keyboard modem sensorhub usb3 wcn
+COMPONENTS ?= audio camera charging drm hall keyboard modem sensorhub touchscreen usb3 wcn
+SUPPORTED := audio camera charging drm hall keyboard modem sensorhub touchscreen usb3 wcn
 COMPILED := camera charging drm hall keyboard modem usb3 wcn
 
 ifneq ($(strip $(filter-out $(SUPPORTED),$(COMPONENTS))),)
@@ -19,7 +19,7 @@ help:
 	  'install DESTDIR=/target/staging: stage tools and service templates' \
 	  'check: native protocol/storage tests; no device access' \
 	  'diagnostics: build explicit DRM, Hall and keyboard diagnostics' \
-	  'Select COMPONENTS="audio camera charging drm hall keyboard modem sensorhub usb3 wcn" and OUT=/path/to/output' \
+	  'Select COMPONENTS="audio camera charging drm hall keyboard modem sensorhub touchscreen usb3 wcn" and OUT=/path/to/output' \
 	  'Experimental GPU/VPU builds are documented in their component README files.'
 
 all: $(addprefix build-,$(filter $(COMPILED),$(COMPONENTS)))
