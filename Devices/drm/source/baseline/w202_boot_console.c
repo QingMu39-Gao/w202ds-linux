@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Native DRM boot log client. No early-console or handoff symbols. */
-#include <linux/console.h>
-#include <linux/font.h>
+/* Native DRM boot window. fbcon remains the single Linux text renderer. */
 #include <linux/io.h>
 #include <linux/iosys-map.h>
-#include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/slab.h>
-#include <linux/spinlock.h>
-#include <linux/workqueue.h>
 #include <drm/drm_client.h>
 #include <drm/drm_connector.h>
 #include <drm/drm_framebuffer.h>
@@ -17,101 +12,22 @@
 #include <drm/drm_print.h>
 #include "w202_r6p0.h"
 #include "w202_boot_text.h"
+#include "common/linux/pj4edk2_fbcon.h"
 
 struct w202_boot_console {
 	struct drm_client_dev client;
 	struct drm_client_buffer *buffer;
 	struct iosys_map map;
-	struct console console;
-	struct work_struct work;
-	raw_spinlock_t lock;
-	struct w202_boot_text text, frame;
-	u8 drawn[W202_TEXT_ROWS][W202_TEXT_COLS];
-	struct pj4edk_glyphs glyphs;
+	struct fb_info *fb;
+	u32 cells[20];
 	void *inherited;
-	bool active, registered, captured, committed;
-	u64 frames, cells, render_ns, render_max_ns;
+	bool captured, committed;
 };
-
-static void w202_boot_render(struct work_struct *work)
-{
-	struct w202_boot_console *b = container_of(work, struct w202_boot_console, work);
-	unsigned long flags;
-	u64 start, changed = 0, elapsed;
-	unsigned int row, col, x, y, ch;
-	u32 line[W202_TEXT_W];
-
-	raw_spin_lock_irqsave(&b->lock, flags);
-	if (!b->active) {
-		raw_spin_unlock_irqrestore(&b->lock, flags);
-		return;
-	}
-	b->frame = b->text;
-	b->text.dirty = 0;
-	raw_spin_unlock_irqrestore(&b->lock, flags);
-	start = ktime_get_ns();
-	for (row = 0; row < b->frame.rows; row++) {
-		if (!(b->frame.dirty & (1ULL << row)))
-			continue;
-		for (col = 0; col < b->frame.cols; col++) {
-			ch = b->frame.cells[row][col];
-			if (b->drawn[row][col] == ch)
-				continue;
-			for (y=0; y<W202_TEXT_H; ++y) {
-				for (x=0; x<W202_TEXT_W; ++x)
-					line[x]=b->glyphs.pixels[ch-32][x][W202_TEXT_H-1-y]?0x00dedede:0;
-				iosys_map_memcpy_to(&b->map,
-					(b->frame.top+row*W202_TEXT_H+y)*b->buffer->pitch+
-					(b->frame.left+col*W202_TEXT_W)*4,line,sizeof(line));
-			}
-			b->drawn[row][col] = ch;
-			changed++;
-		}
-	}
-	/* The native DPU scans a DMA-coherent video framebuffer continuously.
-	 * No per-line atomic commit, MMIO kick or synchronous serial write.
-	 */
-	wmb();
-	elapsed = ktime_get_ns() - start;
-	if (changed) {
-		b->frames++;
-		b->cells += changed;
-		b->render_ns += elapsed;
-		b->render_max_ns = max(b->render_max_ns, elapsed);
-	}
-	raw_spin_lock_irqsave(&b->lock, flags);
-	if (b->active && b->text.dirty)
-		schedule_work(&b->work);
-	raw_spin_unlock_irqrestore(&b->lock, flags);
-}
-
-static void w202_boot_write(struct console *console, const char *s, unsigned int count)
-{
-	struct w202_boot_console *b = container_of(console, struct w202_boot_console, console);
-	unsigned long flags;
-
-	raw_spin_lock_irqsave(&b->lock, flags);
-	if (b->active) {
-		while (count--)
-			w202_boot_text_put(&b->text, *s++);
-		if (b->text.dirty)
-			schedule_work(&b->work);
-	}
-	raw_spin_unlock_irqrestore(&b->lock, flags);
-}
 
 static void w202_boot_stop(struct w202_boot_console *b)
 {
-	unsigned long flags;
-
-	raw_spin_lock_irqsave(&b->lock, flags);
-	b->active = false;
-	raw_spin_unlock_irqrestore(&b->lock, flags);
-	if (b->registered) {
-		unregister_console(&b->console);
-		b->registered = false;
-	}
-	cancel_work_sync(&b->work);
+	pj4edk2_fbcon_unregister(b->fb);
+	b->fb = NULL;
 }
 
 static void w202_boot_unregister(struct drm_client_dev *client)
@@ -136,8 +52,8 @@ int w202_boot_console_prepare(struct w202_dpu *d)
 {
 	struct device_node *chosen;
 	struct w202_boot_console *b;
+	struct pj4edk2_fbcon_viewport view;
 	u32 v[20];
-	const u8 *font = font_vga_8x16.data;
 	int ret;
 
 	if (d->boot_console)
@@ -145,37 +61,30 @@ int w202_boot_console_prepare(struct w202_dpu *d)
 	chosen = of_find_node_by_path("/chosen");
 	if (!chosen)
 		return 0;
-	if (!of_find_property(chosen, "pocketjs,boot-display", NULL)) {
+	if (!of_find_property(chosen, PJ4EDK2_DISPLAY_PROPERTY, NULL)) {
 		of_node_put(chosen);
-		return 0; /* Ordinary boot: use full-screen fbdev. */
+		return 0;
 	}
-	ret = of_property_count_u32_elems(chosen, "pocketjs,boot-display");
+	ret = of_property_count_u32_elems(chosen, PJ4EDK2_DISPLAY_PROPERTY);
 	if (ret == ARRAY_SIZE(v))
-		ret = of_property_read_u32_array(chosen, "pocketjs,boot-display", v, ARRAY_SIZE(v));
+		ret = of_property_read_u32_array(chosen, PJ4EDK2_DISPLAY_PROPERTY, v, ARRAY_SIZE(v));
 	else
 		ret = -EINVAL;
 	of_node_put(chosen);
-	if (ret) {
-		drm_warn(&d->drm, "invalid optional boot-display property; using normal fbdev\n");
+	if (ret || !w202_boot_viewport_select(&view, v, ARRAY_SIZE(v))) {
+		drm_warn(&d->drm, "invalid optional boot-display layout; using normal fbdev\n");
 		return 0;
 	}
 	b = kvzalloc(sizeof(*b), GFP_KERNEL);
 	if (!b)
 		return -ENOMEM;
-	if (!w202_boot_text_select(&b->text, v, ARRAY_SIZE(v))) {
-		drm_warn(&d->drm, "unsupported optional boot-display layout; using normal fbdev\n");
-		kvfree(b);
-		return 0;
-	}
-	raw_spin_lock_init(&b->lock);
-	INIT_WORK(&b->work, w202_boot_render);
-	pj4edk_prepare_font(&b->glyphs, font);
+	memcpy(b->cells, v, sizeof(v));
 	b->inherited = memremap(0xb0000000, 9216000, MEMREMAP_WB);
 	if (!b->inherited) {
 		ret = -ENOMEM;
 		goto free;
 	}
-	ret = drm_client_init(&d->drm, &b->client, "w202-boot-log", &w202_boot_client_funcs);
+	ret = drm_client_init(&d->drm, &b->client, "w202-boot-fbcon", &w202_boot_client_funcs);
 	if (ret)
 		goto unmap;
 	b->buffer = drm_client_framebuffer_create(&b->client, 1920, 1200, DRM_FORMAT_XRGB8888);
@@ -186,15 +95,16 @@ int w202_boot_console_prepare(struct w202_dpu *d)
 	ret = drm_client_buffer_vmap(b->buffer, &b->map);
 	if (ret)
 		goto delete;
-	if (b->buffer->pitch < 7680) {
+	if (b->buffer->pitch < 7680 || b->map.is_iomem) {
 		ret = -EINVAL;
 		drm_client_buffer_vunmap(b->buffer);
 		goto delete;
 	}
-	strscpy(b->console.name, "drmboot", sizeof(b->console.name));
-	b->console.write = w202_boot_write;
-	b->console.flags = CON_ENABLED | CON_PRINTBUFFER;
-	b->console.index = 0;
+	/* This is a new XRGB8888 allocation, regardless of the inherited GOP
+	 * channel order. The board's accepted geometry remains unchanged. */
+	b->cells[8] = b->buffer->pitch;
+	b->cells[4] = b->cells[5] = b->buffer->pitch * 1200;
+	b->cells[9] = 2;
 	d->boot_console = b;
 	drm_client_register(&b->client);
 	return 0;
@@ -214,9 +124,8 @@ void w202_boot_console_capture(struct w202_dpu *d)
 	struct w202_boot_console *b = d->boot_console;
 	unsigned int y;
 
-	/* Called after generic aperture removal has drained the old writer,
-	 * before resetting the DPU. Preserve every pixel outside the log window.
-	 */
+	/* Aperture removal has detached old fbcon and drained its DPU worker.
+	 * Preserve the whole inherited frame before native scanout starts. */
 	if (!b || b->captured)
 		return;
 	for (y = 0; y < 1200; y++)
@@ -235,32 +144,36 @@ int w202_boot_console_start(struct w202_dpu *d)
 	struct drm_mode_set *set;
 	int ret;
 
-	if (b->committed)
+	if (b->committed && b->fb)
 		return 0;
 	if (!b->captured)
 		return -EINVAL;
-	ret = drm_client_modeset_probe(&b->client, 1920, 1200);
-	if (ret)
-		return ret;
-	mutex_lock(&b->client.modeset_mutex);
-	drm_client_for_each_modeset(set, &b->client) {
-		if (set->num_connectors)
-			set->fb = b->buffer->fb;
+	if (!b->committed) {
+		ret = drm_client_modeset_probe(&b->client, 1920, 1200);
+		if (ret)
+			return ret;
+		mutex_lock(&b->client.modeset_mutex);
+		drm_client_for_each_modeset(set, &b->client) {
+			if (set->num_connectors)
+				set->fb = b->buffer->fb;
+		}
+		mutex_unlock(&b->client.modeset_mutex);
+		ret = drm_client_modeset_commit(&b->client);
+		if (ret)
+			return ret;
+		if (d->latch_timeouts != timeouts || d->updates == updates)
+			return -ETIMEDOUT;
+		b->committed = true;
 	}
-	mutex_unlock(&b->client.modeset_mutex);
-	/* The public commit helper obtains both the internal DRM master and
-	 * modeset_mutex. Never call it while holding that mutex ourselves. */
-	ret = drm_client_modeset_commit(&b->client);
-	if (ret)
+	b->fb = pj4edk2_fbcon_register(d->drm.dev, THIS_MODULE, b->cells,
+		b->map.vaddr, b->buffer->pitch * 1200, NULL, NULL);
+	if (IS_ERR(b->fb)) {
+		ret = PTR_ERR(b->fb);
+		b->fb = NULL;
 		return ret;
-	if (d->latch_timeouts != timeouts || d->updates == updates)
-		return -ETIMEDOUT;
-	b->committed = true;
-	b->active = true;
-	register_console(&b->console);
-	b->registered = true;
-	pr_info("w202-drm: native boot log active in %ux%u cells; full screen awaits login\n",
-		b->text.cols, b->text.rows);
+	}
+	pr_info("w202-drm: native fbcon boot window %ux%u; full screen awaits login\n",
+		b->fb->var.xres, b->fb->var.yres);
 	return 0;
 }
 
@@ -272,7 +185,7 @@ void w202_boot_console_stop(struct w202_dpu *d)
 
 bool w202_boot_console_active(struct w202_dpu *d)
 {
-	return d->boot_console && READ_ONCE(d->boot_console->active);
+	return d->boot_console && READ_ONCE(d->boot_console->fb);
 }
 
 ssize_t w202_boot_console_status(struct w202_dpu *d, char *buf)
@@ -281,7 +194,6 @@ ssize_t w202_boot_console_status(struct w202_dpu *d, char *buf)
 
 	if (!b)
 		return sysfs_emit(buf, "available=0 active=0\n");
-	return sysfs_emit(buf, "available=1 active=%u captured=%u committed=%u frames=%llu cells=%llu render_ns=%llu render_max_ns=%llu pitch=%u\n",
-		READ_ONCE(b->active), b->captured, b->committed, READ_ONCE(b->frames),
-		READ_ONCE(b->cells), READ_ONCE(b->render_ns), READ_ONCE(b->render_max_ns), b->buffer->pitch);
+	return sysfs_emit(buf, "available=1 active=%u captured=%u committed=%u renderer=fbcon pitch=%u\n",
+		!!READ_ONCE(b->fb), b->captured, b->committed, b->buffer->pitch);
 }

@@ -2,8 +2,13 @@ config PJ4EDK_BOOT_DISPLAY
 	bool "pj4edk-boot-display retained boot logs (W202DS)"
 	depends on ARM64 && OF && COMMON_CLK
 	select APERTURE_HELPERS
+	select FB
+	select FB_SYSMEM_HELPERS
+	select FRAMEBUFFER_CONSOLE
+	select FRAMEBUFFER_CONSOLE_ROTATION
 	select FONT_SUPPORT
 	select FONT_8x16
 	help
-	  Print in the validated boot-display rectangle and hold its clocks
-	  until a native display driver removes the firmware aperture.
+	  Register the validated boot-display rectangle as a standard fbcon
+	  framebuffer, including Linux logos. Hold its clocks until a native
+	  display driver removes the firmware aperture.

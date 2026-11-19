@@ -51,6 +51,9 @@ static int pj4edk_display_probe(struct platform_device *pdev)
 	ret = devm_aperture_acquire_for_platform_device(pdev, 0xb0000000, 0x9e4000);
 	if (ret)
 		goto keep_scanout;
+	ret = pj4edk_boot_display_fb_register(&pdev->dev);
+	if (ret)
+		goto keep_scanout;
 	dev_info(&pdev->dev, "retained DPU/DSI clocks held until native aperture takeover\n");
 	goto out_nodes;
 keep_scanout:
@@ -113,4 +116,4 @@ static int __init pj4edk_display_init(void)
 	}
 	return 0;
 }
-late_initcall(pj4edk_display_init);
+device_initcall(pj4edk_display_init);
