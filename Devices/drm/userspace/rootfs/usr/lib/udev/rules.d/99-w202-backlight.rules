@@ -1,0 +1,2 @@
+# Keep the saved brightness identity stable when DRM claims this PWM backlight.
+SUBSYSTEM=="backlight", KERNEL=="w202-backlight", ENV{ID_PATH}="platform-backlight", ENV{ID_PATH_TAG}="platform-backlight", ENV{ID_FOR_SEAT}="backlight-platform-backlight"

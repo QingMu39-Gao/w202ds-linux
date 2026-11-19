@@ -710,7 +710,48 @@ static int w202_get_modes(struct drm_connector *connector)
  return ARRAY_SIZE(d->modes);
 }
 static const struct drm_connector_helper_funcs connector_helpers = { .get_modes = w202_get_modes };
+/* Publish the same standard backlight device under its DRM connector.
+ * The PWM provider must still be available before the DPU probes.
+ */
+static int w202_connector_late_register(struct drm_connector *connector)
+{
+	struct w202_dpu *d = to_w202(connector->dev);
+	struct device *bl_dev = &d->backlight->dev;
+	struct device *parent = get_device(bl_dev->parent);
+	int ret;
+
+	if (!parent)
+		return 0;
+	ret = device_move(bl_dev, connector->kdev, DPM_ORDER_DEV_AFTER_PARENT);
+	if (ret) {
+		drm_warn(&d->drm, "could not associate panel backlight: %d\n", ret);
+		put_device(parent);
+	} else {
+		d->backlight_parent = parent;
+	}
+	return 0;
+}
+
+static void w202_connector_early_unregister(struct drm_connector *connector)
+{
+	struct w202_dpu *d = to_w202(connector->dev);
+	struct device *bl_dev = &d->backlight->dev;
+	int ret;
+
+	if (!d->backlight_parent)
+		return;
+	if (device_is_registered(bl_dev)) {
+		ret = device_move(bl_dev, d->backlight_parent, DPM_ORDER_DEV_AFTER_PARENT);
+		if (ret)
+			drm_warn(&d->drm, "could not restore backlight parent: %d\n", ret);
+	}
+	put_device(d->backlight_parent);
+	d->backlight_parent = NULL;
+}
+
 static const struct drm_connector_funcs connector_funcs = {
+	.late_register = w202_connector_late_register,
+	.early_unregister = w202_connector_early_unregister,
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.destroy = drm_connector_cleanup,
 	.reset = drm_atomic_helper_connector_reset,

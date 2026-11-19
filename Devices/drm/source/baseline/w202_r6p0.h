@@ -24,6 +24,7 @@ struct w202_dpu {
 	struct drm_display_mode modes[2];
 	struct device *dev;
 	struct backlight_device *backlight;
+	struct device *backlight_parent;
 	void __iomem *regs;
 	struct clk *clks[5];
 	struct completion updated, stopped, configured;
