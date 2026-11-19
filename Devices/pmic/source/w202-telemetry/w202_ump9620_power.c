@@ -335,6 +335,7 @@ static int w202_usb_get_property(struct power_supply *psy,
 	struct power_supply *source;
 	union power_supply_propval limit, online, usb_type;
 	u32 raw, status = 0, debug = 0, enable = 0;
+	unsigned int debug_current = 0;
 	int ret;
 
 	ret = regmap_read(p->regmap, 0x239c, &raw);
@@ -356,12 +357,27 @@ static int w202_usb_get_property(struct power_supply *psy,
 		}
 		raw = w202_usb_fresh_bc12_status(raw, detected);
 	}
+	if (p->typec_base && (property == POWER_SUPPLY_PROP_ONLINE ||
+	    property == POWER_SUPPLY_PROP_VOLTAGE_MAX ||
+	    property == POWER_SUPPLY_PROP_CURRENT_MAX)) {
+		ret = regmap_read(p->regmap, p->typec_base, &enable);
+		if (!ret)
+			ret = regmap_read(p->regmap, p->typec_base + 0x1c, &status);
+		if (!ret)
+			ret = regmap_read(p->regmap, p->typec_base + 0x60, &debug);
+		if (ret)
+			return ret;
+		debug_current = w202_usb_debug_sink_current(raw, enable, status, debug,
+			p->usb_phy && READ_ONCE(p->usb_phy->chg_state) == USB_CHARGER_PRESENT);
+	}
 	switch (property) {
 	case POWER_SUPPLY_PROP_SCOPE:
 		val->intval = POWER_SUPPLY_SCOPE_SYSTEM;
 		return 0;
 	case POWER_SUPPLY_PROP_ONLINE:
 		val->intval = !!(raw & BIT(2));
+		if (debug_current)
+			return 0;
 		source = p->tcpm_supply_name ? power_supply_get_by_name(p->tcpm_supply_name) : NULL;
 		if (source) {
 			ret = power_supply_get_property(source, property, &online);
@@ -373,6 +389,8 @@ static int w202_usb_get_property(struct power_supply *psy,
 		return 0;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
 		val->intval = 5000000;
+		if (debug_current)
+			return 0;
 		source = p->tcpm_supply_name ? power_supply_get_by_name(p->tcpm_supply_name) : NULL;
 		if (source) {
 			/* TCPM VOLTAGE_NOW is the negotiated nominal target. Its
@@ -420,19 +438,13 @@ static int w202_usb_get_property(struct power_supply *psy,
 			val->intval = 0;
 			return 0;
 		}
-		if (p->typec_base) {
-			ret = regmap_read(p->regmap, p->typec_base, &enable);
-			if (!ret)
-				ret = regmap_read(p->regmap, p->typec_base + 0x1c, &status);
-			if (!ret)
-				ret = regmap_read(p->regmap, p->typec_base + 0x60, &debug);
-			if (ret)
-				return ret;
-			/* Vendor sc27xx_pd: state 2 = attached sink; STATUS[7:6]
-			 * is live Rp (0 default, 1 1.5 A, 2 3 A). DBG1[8] is
-			 * VBUS_OK. Never use a stale detached/source-state code.
-			 */
+		if (debug_current) {
+			val->intval = debug_current;
+			return 0;
 		}
+		/* Only ordinary attached sink (state 2) advertises Rp current.
+		 * Debug accessories use the separate, guarded BC1.2 path above.
+		 */
 		val->intval = w202_usb_source_current(raw, enable, status, debug);
 		/* TCPM owns the source's negotiated budget. Once it manages this
 		 * port, a PD contract can be lower than Rp, or exceed default Rp.

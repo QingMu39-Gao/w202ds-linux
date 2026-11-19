@@ -65,6 +65,23 @@ static inline unsigned int w202_usb_source_current(unsigned int charge_status,
 	return available;
 }
 
+/* W205 DEBUG_CABLE (state 8) is a USB sink. Linux TCPM attaches the debug
+ * partner and sets sink roles, but has no charging contract in that state.
+ * Accept this separate 5 V input only while both VBUS detectors agree,
+ * the detector is enabled, and TCPM has marked the PHY as a present sink.
+ * Accessory Rp bits grant no extra current; only fresh BC1.2 may do so.
+ */
+static inline unsigned int w202_usb_debug_sink_current(unsigned int charge_status,
+		unsigned int typec_enable, unsigned int typec_status,
+		unsigned int typec_debug, int phy_sink)
+{
+	if (!phy_sink || !(charge_status & 4) || !(typec_enable & 1) ||
+	    (typec_status & 0x1f) != 8 || !(typec_debug & 0x100))
+		return 0;
+	return w202_usb_source_current(charge_status, typec_enable,
+				       typec_status, typec_debug);
+}
+
 /* TCPM CURRENT_NOW is the negotiated/requested input budget, not measured
  * current. Non-PD must also respect the live Type-C/BC1.2 ceiling.
  */

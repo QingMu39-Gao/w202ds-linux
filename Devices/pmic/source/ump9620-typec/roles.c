@@ -15,10 +15,16 @@ int w202_typec_get_cc(struct tcpc_dev *tcpc, enum typec_cc_status *cc1,
 	*cc2 = TYPEC_CC_OPEN;
 	if (ret)
 		return ret;
-	/* W205 sc27xx_cc_status: 2=attached sink, 5=attached source,
-	 * 6=powered cable (the other CC needs VCONN, currently unsupported).
+	/* W205 sc27xx_typec also treats state 8 (DEBUG_CABLE) as a sink.
+	 * Report both Rp to TCPM as a debug accessory, without inventing a
+	 * PD-capable cable or interpreting its accessory bits as current.
+	 * State 6 needs VCONN, currently unsupported.
 	 */
 	switch (value & SC27XX_STATE_MASK) {
+	case 8:
+		*cc1 = TYPEC_CC_RP_DEF;
+		*cc2 = TYPEC_CC_RP_DEF;
+		return 0;
 	case 2:
 		switch (SC27XX_TYPEC_VBUS_CL(value)) {
 		case 0: cc = TYPEC_CC_RP_DEF; break;

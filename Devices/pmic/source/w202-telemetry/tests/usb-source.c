@@ -62,6 +62,33 @@ int main(void)
 		for (rp = 0; rp < 4; rp++)
 			assert(w202_usb_source_current(4, 1, state | (rp << 6), 0x100) == 500000);
 	}
+	/* Accessory power requires an attached sink, two VBUS indications
+	 * and an enabled detector. Never grant 3 A from debug-cable bits.
+	 */
+	for (state = 0; state < 32; ++state) {
+		for (rp = 0; rp < 4; ++rp) {
+			unsigned int status = state | (rp << 6);
+
+			assert(w202_usb_debug_sink_current(4, 1, status, 0x100, 1) ==
+				(state == 8 ? 500000 : 0));
+			assert(!w202_usb_debug_sink_current(0, 1, status, 0x100, 1));
+			assert(!w202_usb_debug_sink_current(4, 0, status, 0x100, 1));
+			assert(!w202_usb_debug_sink_current(4, 1, status, 0, 1));
+			assert(!w202_usb_debug_sink_current(4, 1, status, 0x100, 0));
+		}
+	}
+	assert(w202_usb_debug_sink_current(
+		w202_usb_fresh_bc12_status(0x844, W202_BC12_UNKNOWN),
+		1, 0xc8, 0x100, 1) == 500000);
+	assert(w202_usb_debug_sink_current(
+		w202_usb_fresh_bc12_status(4, W202_BC12_DCP),
+		1, 8, 0x100, 1) == 1500000);
+	assert(w202_usb_debug_sink_current(
+		w202_usb_fresh_bc12_status(4, W202_BC12_CDP),
+		1, 8, 0x100, 1) == 1500000);
+	assert(w202_usb_debug_sink_current(
+		w202_usb_fresh_bc12_status(4, W202_BC12_SDP),
+		1, 8, 0x100, 1) == 500000);
 	/* A contract can be lower than Rp. PD can also grant more than default
 	 * Rp; a non-PD provider cannot. Clamp an invalid oversized budget.
 	 */
@@ -71,6 +98,6 @@ int main(void)
 	assert(w202_usb_sink_budget(3000000, 500000, 0) == 500000);
 	assert(w202_usb_sink_budget(3000000, 0, 1) == 0);
 	assert(w202_usb_sink_budget(3000000, 6000000, 1) == 3000000);
-	puts("USB source: 65536 BC1.2 status words, stale CC and TCPM budgets passed");
+	puts("USB source: BC1.2 status words, debug sink guards, stale CC and TCPM budgets passed");
 	return 0;
 }

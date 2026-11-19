@@ -75,6 +75,17 @@ int main(void)
     assert(!w202_typec_get_cc(&tcpc, &cc1, &cc2) && cc1 == TYPEC_CC_RA && cc2 == TYPEC_CC_RD);
     puts("PASS: W205 sink/source/powered-cable CC decoding and both orientations");
 
+    for (i = 0; i < 8; ++i) {
+        regs[0x39c] = 8 | (i << 5);
+        assert(!w202_typec_get_cc(&tcpc, &cc1, &cc2));
+        assert(cc1 == TYPEC_CC_RP_DEF && cc2 == TYPEC_CC_RP_DEF);
+    }
+    calls = 0; fail_at = 1;
+    assert(w202_typec_get_cc(&tcpc, &cc1, &cc2) == -EIO);
+    assert(cc1 == TYPEC_CC_OPEN && cc2 == TYPEC_CC_OPEN);
+    fail_at = 0;
+    puts("PASS: debug sink reports dual default Rp, ignores accessory current bits, fails closed");
+
     regs[0x3e0] = BIT(8);
     assert(w202_typec_set_vbus(&tcpc, true, false) == -EBUSY && enables == 0);
     regs[0x3e0] = 0;
