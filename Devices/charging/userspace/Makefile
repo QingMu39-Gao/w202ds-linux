@@ -9,6 +9,7 @@ install: all
 	install -D -m 0755 rootfs/usr/libexec/w202-charging "$(DESTDIR)/usr/libexec/w202-charging"
 	install -D -m 0755 "$(OUT)/w202-power-control" "$(DESTDIR)/usr/libexec/w202-power-control"
 	install -D -m 0644 rootfs/usr/lib/systemd/system/w202-charging.service "$(DESTDIR)/usr/lib/systemd/system/w202-charging.service"
+	install -D -m 0644 rootfs/usr/lib/systemd/system/w202-charging.timer "$(DESTDIR)/usr/lib/systemd/system/w202-charging.timer"
 check:
 	$(PYTHON) -B tests/test-policy.py
 	$(PYTHON) -B tests/test-controls.py

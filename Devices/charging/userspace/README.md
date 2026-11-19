@@ -1,6 +1,6 @@
 # 充电初始化
 
-`w202-charging` 加载电池遥测、双路充电和 Type-C/PD 驱动，等待标准 `power_supply` 接口就绪，然后设置主路充电模式并回读。从路始终保持 `inhibit-charge`。启动顺序兼容已有 `w202-power.service`，在旧初始化完成后应用发行版策略。
+`w202-charging` 加载电池遥测、双路充电和 Type-C/PD 驱动，等待标准 `power_supply` 接口就绪，然后设置主路充电模式并回读。从路始终保持 `inhibit-charge`。
 
 ```sh
 make install DESTDIR=/target/rootfs
@@ -9,7 +9,7 @@ sudo /usr/libexec/w202-charging inhibit-charge
 /usr/libexec/w202-charging status
 ```
 
-基础单元默认停充。发行版通过 `/etc/default/w202-charging` 设置 `CHARGE_BEHAVIOUR=auto` 并启用 `w202-charging.service`。发行版集成层 在自己的板型配置中选择自动充电；安装模板本身不会加载模块或启用服务。
+基础单元默认停充。发行版通过 `/etc/default/w202-charging` 设置 `CHARGE_BEHAVIOUR=auto`，并启用 `w202-charging.timer`，在启动时独立触发一次初始化。不要同时把充电 service 加入 `multi-user.target.wants`：登录和桌面可以并行启动，真实就绪仍以 oneshot service 完成及 `power_supply` 状态为准。journal 中的 stage/uptime 可区分驱动加载、接口等待及策略提交耗时。安装模板本身不会加载模块或启用服务。
 
 `auto` 只提交自动充电请求。PPS、固定档回退、源电流预算、温度、电压及故障保护由驱动负责，不由脚本写寄存器或固定电压。服务只在启动时应用一次策略，运行中的手动停充继续有效；`systemctl stop` 不等于停充，应使用上述 `inhibit-charge` 命令或标准 sysfs 接口。
 

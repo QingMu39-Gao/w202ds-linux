@@ -45,12 +45,20 @@ case "$mode" in
     auto|inhibit-charge) ;;
     *) echo 'Usage: w202-charging [auto|inhibit-charge|status]' >&2; exit 2 ;;
 esac
+stage() {
+    read -r elapsed rest < /proc/uptime || elapsed=unknown
+    echo "W202DS charging: stage=$1 uptime=$elapsed"
+}
+stage battery-driver
 modprobe w202_ump9620_power
+stage charger-driver
 modprobe w202_bq_control
+stage typec-driver
 # No PD controller still permits the driver's guarded ordinary USB fallback.
 if ! modprobe w202_ump9620_typec; then
     echo 'W202DS charging: PD controller unavailable; using ordinary USB limits' >&2
 fi
+stage wait-interfaces
 attempt=0
 while ! test -w "$supplies/w202-bq-main/charge_behaviour" ||
       ! test -w "$supplies/w202-bq-slave/charge_behaviour" ||
@@ -62,6 +70,7 @@ while ! test -w "$supplies/w202-bq-main/charge_behaviour" ||
     fi
     sleep 0.1
 done
+stage apply-policy
 set_mode() {
     supply=$1
     requested=$2

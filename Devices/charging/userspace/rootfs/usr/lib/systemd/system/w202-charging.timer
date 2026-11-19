@@ -1,0 +1,10 @@
+[Unit]
+Description=Start guarded W202DS charging independently of login
+
+[Timer]
+OnBootSec=0
+AccuracySec=1s
+Unit=w202-charging.service
+
+[Install]
+WantedBy=timers.target
