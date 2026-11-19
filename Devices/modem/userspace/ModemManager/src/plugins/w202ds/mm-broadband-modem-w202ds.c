@@ -4,7 +4,9 @@
 #include "mm-bearer-list.h"
 #include "mm-base-modem-at.h"
 #include "mm-iface-modem-3gpp.h"
+#include "mm-iface-modem-signal.h"
 #include "mm-log-object.h"
+#include "mm-modem-helpers.h"
 #include "mm-modem-helpers-w202ds.h"
 #include <string.h>
 
@@ -24,9 +26,11 @@ typedef struct { MMBroadbandModemClass parent; } MMBroadbandModemW202dsClass;
 
 static MMIfaceModemInterface *iface_modem_parent;
 static void iface_modem_init (MMIfaceModemInterface *iface);
+static void iface_modem_signal_init (MMIfaceModemSignalInterface *iface);
 G_DEFINE_TYPE_EXTENDED (MMBroadbandModemW202ds, mm_broadband_modem_w202ds,
                        MM_TYPE_BROADBAND_MODEM, 0,
-                       G_IMPLEMENT_INTERFACE (MM_TYPE_IFACE_MODEM, iface_modem_init))
+                       G_IMPLEMENT_INTERFACE (MM_TYPE_IFACE_MODEM, iface_modem_init)
+                       G_IMPLEMENT_INTERFACE (MM_TYPE_IFACE_MODEM_SIGNAL, iface_modem_signal_init))
 
 /* Keep the AT port open even in SIM_MISSING, so insertion can be detected
  * without restarting ModemManager or adding a polling service. */
@@ -331,6 +335,119 @@ load_current_capabilities_finish (MMIfaceModem *self, GAsyncResult *res, GError 
 }
 
 static void
+legacy_signal_quality_ready (MMIfaceModem *self,
+                             GAsyncResult *res,
+                             GTask        *user_data)
+{
+    g_autoptr(GTask) task = user_data;
+    g_autoptr(GError) error = NULL;
+    guint quality;
+
+    quality = iface_modem_parent->load_signal_quality_finish (self, res, &error);
+    if (error)
+        g_task_return_error (task, g_steal_pointer (&error));
+    else
+        g_task_return_int (task, quality);
+}
+
+static void
+nr_signal_quality_ready (MMBaseModem  *self,
+                         GAsyncResult *res,
+                         GTask        *user_data)
+{
+    g_autoptr(GTask) task = user_data;
+    g_autoptr(MMSignal) signal = NULL;
+    gdouble rsrp;
+
+    signal = mm_w202ds_cesq_nr_signal (mm_base_modem_at_command_finish (self, res, NULL));
+    rsrp = signal ? mm_signal_get_rsrp (signal) : MM_SIGNAL_UNKNOWN;
+    if (rsrp != MM_SIGNAL_UNKNOWN) {
+        g_task_return_int (task, MM_RSRP_TO_QUALITY (rsrp));
+        return;
+    }
+
+    iface_modem_parent->load_signal_quality (MM_IFACE_MODEM (self),
+                                            (GAsyncReadyCallback) legacy_signal_quality_ready,
+                                            g_steal_pointer (&task));
+}
+
+static void
+load_signal_quality (MMIfaceModem        *self,
+                     GAsyncReadyCallback  callback,
+                     gpointer             user_data)
+{
+    GTask *task = g_task_new (self, NULL, callback, user_data);
+
+    if (mm_iface_modem_get_access_technologies (self) & MM_MODEM_ACCESS_TECHNOLOGY_5GNR) {
+        mm_base_modem_at_command (MM_BASE_MODEM (self), "+CESQ", 3, FALSE,
+                                  (GAsyncReadyCallback) nr_signal_quality_ready, task);
+        return;
+    }
+
+    iface_modem_parent->load_signal_quality (self,
+                                            (GAsyncReadyCallback) legacy_signal_quality_ready, task);
+}
+
+static guint
+load_signal_quality_finish (MMIfaceModem  *self,
+                            GAsyncResult  *res,
+                            GError       **error)
+{
+    gssize quality = g_task_propagate_int (G_TASK (res), error);
+    return quality < 0 ? 0 : (guint) quality;
+}
+
+static gboolean
+load_signal_values_finish (MMIfaceModemSignal  *self,
+                           GAsyncResult        *res,
+                           MMSignal           **cdma,
+                           MMSignal           **evdo,
+                           MMSignal           **gsm,
+                           MMSignal           **umts,
+                           MMSignal           **lte,
+                           MMSignal           **nr5g,
+                           GError             **error)
+{
+    const gchar *response;
+    g_autoptr(MMSignal) gsm_signal = NULL;
+    g_autoptr(MMSignal) umts_signal = NULL;
+    g_autoptr(MMSignal) lte_signal = NULL;
+    g_autoptr(MMSignal) nr_signal = NULL;
+    g_autoptr(GError) legacy_error = NULL;
+
+    response = mm_base_modem_at_command_finish (MM_BASE_MODEM (self), res, error);
+    if (!response)
+        return FALSE;
+    nr_signal = mm_w202ds_cesq_nr_signal (response);
+    if (!mm_3gpp_cesq_response_to_signal_info (response, self, &gsm_signal, &umts_signal,
+                                              &lte_signal, &legacy_error) && !nr_signal) {
+        g_propagate_error (error, g_steal_pointer (&legacy_error));
+        return FALSE;
+    }
+
+    if (cdma)
+        *cdma = NULL;
+    if (evdo)
+        *evdo = NULL;
+    if (gsm)
+        *gsm = g_steal_pointer (&gsm_signal);
+    if (umts)
+        *umts = g_steal_pointer (&umts_signal);
+    if (lte)
+        *lte = g_steal_pointer (&lte_signal);
+    if (nr5g)
+        *nr5g = g_steal_pointer (&nr_signal);
+    return TRUE;
+}
+
+static void
+iface_modem_signal_init (MMIfaceModemSignalInterface *iface)
+{
+    /* The parent sends the same +CESQ request; retain its support check. */
+    iface->load_values_finish = load_signal_values_finish;
+}
+
+static void
 iface_modem_init (MMIfaceModemInterface *iface)
 {
     iface_modem_parent = g_type_interface_peek_parent (iface);
@@ -339,6 +456,8 @@ iface_modem_init (MMIfaceModemInterface *iface)
     iface->cleanup_sim_hot_swap = cleanup_sim_hot_swap;
     iface->load_current_capabilities = load_current_capabilities;
     iface->load_current_capabilities_finish = load_current_capabilities_finish;
+    iface->load_signal_quality = load_signal_quality;
+    iface->load_signal_quality_finish = load_signal_quality_finish;
     iface->create_bearer = create_bearer;
     iface->create_bearer_finish = create_bearer_finish;
     iface->create_bearer_list = create_bearer_list;

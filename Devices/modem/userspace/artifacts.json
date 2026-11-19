@@ -11,6 +11,21 @@
     "opt/w202ds/modemmanager/sbin/ModemManager",
     "opt/w202ds/modemmanager/lib/ModemManager/libmm-plugin-w202ds.so",
     "usr/share/polkit-1/actions/org.freedesktop.ModemManager1.policy",
-    "usr/lib/udev/rules.d/77-mm-w202ds.rules"
-  ]
+    "usr/lib/udev/rules.d/77-mm-w202ds.rules",
+    "usr/lib/firmware/w202ds/modem/nr_modem_a.img",
+    "usr/lib/firmware/w202ds/modem/nr_phy_a.img",
+    "usr/lib/firmware/w202ds/modem/pm_sys_a.img",
+    "usr/lib/firmware/w202ds/modem/ch_sys_a.img",
+    "usr/lib/firmware/w202-diag/vbmeta.bin",
+    "usr/lib/firmware/w202-diag/vboot-key-hash.bin",
+    "etc/systemd/system/ModemManager.service.d/10-w202-runtime-order.conf"
+  ],
+  "required_sha256": {
+    "usr/lib/firmware/w202ds/modem/nr_modem_a.img": "2c6fc2063abb5119c19ee2e9484cac14a9dbb876dd9b15a8d9cac06e8c4cbc4e",
+    "usr/lib/firmware/w202ds/modem/nr_phy_a.img": "bea368f57381b0249504108c0bcef12109c0d36f59974cc8f4b2c47c35081bde",
+    "usr/lib/firmware/w202ds/modem/pm_sys_a.img": "9ce2c1e8d2def7d818cc90a56ed3bd9ed1fb7f8bfd9bb541ee5ee6e7b61686c3",
+    "usr/lib/firmware/w202ds/modem/ch_sys_a.img": "ecf4ade2e5024f1b9f707fa609ab7312052ae3a2191763d9b5342f39856e3a71",
+    "usr/lib/firmware/w202-diag/vbmeta.bin": "b6fd2da4238a5e25c8ddb8da23a3914fee4aa2c041fbfcc76ba1a831ba38bbc9",
+    "usr/lib/firmware/w202-diag/vboot-key-hash.bin": "93d0945b4ee77ad8ea5d123df8d807936561968fdb85848742c28a0e7cd0739e"
+  }
 }

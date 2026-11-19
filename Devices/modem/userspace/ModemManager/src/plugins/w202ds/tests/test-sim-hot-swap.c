@@ -79,10 +79,35 @@ test_presence (void)
         MM_W202DS_SIM_ACTION_NONE);
 }
 
+static void
+test_nr_signal (void)
+{
+    g_autoptr(MMSignal) signal = NULL;
+
+    /* Captured on W202DS while registered to an NR cell. */
+    signal = mm_w202ds_cesq_nr_signal ("+CESQ: 99,99,255,255,255,255,75,90,97");
+    g_assert_nonnull (signal);
+    g_assert_cmpfloat (mm_signal_get_rsrq (signal), ==, -6.0);
+    g_assert_cmpfloat (mm_signal_get_rsrp (signal), ==, -67.0);
+    g_assert_cmpfloat (mm_signal_get_snr (signal), ==, 25.0);
+    g_clear_object (&signal);
+
+    g_assert_null (mm_w202ds_cesq_nr_signal ("+CESQ: 99,99,255,255,25,57"));
+    g_assert_null (mm_w202ds_cesq_nr_signal ("+CESQ: 99,99,255,255,25,57,255,255,255"));
+    g_assert_null (mm_w202ds_cesq_nr_signal ("+CESQ: 99,99,255,255,25,57,0,broken,127"));
+
+    signal = mm_w202ds_cesq_nr_signal ("+CESQ: 99,99,255,255,255,255,0,255,127");
+    g_assert_nonnull (signal);
+    g_assert_cmpfloat (mm_signal_get_rsrq (signal), ==, -43.0);
+    g_assert_cmpfloat (mm_signal_get_rsrp (signal), ==, MM_SIGNAL_UNKNOWN);
+    g_assert_cmpfloat (mm_signal_get_snr (signal), ==, 40.0);
+}
+
 int main (int argc, char **argv)
 {
     g_test_init (&argc, &argv, NULL);
     g_test_add_func ("/w202ds/sim/notifications", test_notifications);
     g_test_add_func ("/w202ds/sim/presence", test_presence);
+    g_test_add_func ("/w202ds/signal/cesq-nr", test_nr_signal);
     return g_test_run ();
 }

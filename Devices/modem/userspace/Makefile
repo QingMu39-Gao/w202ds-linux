@@ -47,6 +47,13 @@ install: all
 	install -D -m 0755 "$(OUT)/w202-modem-netcheck" "$(DESTDIR)/usr/local/sbin/w202-modem-netcheck"
 	install -D -m 0755 "$(OUT)/w202-android-runtime" "$(DESTDIR)/usr/libexec/w202-android-runtime"
 	install -D -m 0644 "$(OUT)/runtime-properties.bin" "$(DESTDIR)/usr/share/w202ds/modem/runtime-properties.bin"
+	# Immutable CP firmware is board payload; private NV is provisioned separately.
+	install -D -m 0644 "../firmware/stock-partitions/nr_modem_a.img" "$(DESTDIR)/usr/lib/firmware/w202ds/modem/nr_modem_a.img"
+	install -D -m 0644 "../firmware/stock-partitions/nr_phy_a.img" "$(DESTDIR)/usr/lib/firmware/w202ds/modem/nr_phy_a.img"
+	install -D -m 0644 "../firmware/stock-partitions/pm_sys_a.img" "$(DESTDIR)/usr/lib/firmware/w202ds/modem/pm_sys_a.img"
+	install -D -m 0644 "../../sensorhub/firmware/stock-partitions/ch_sys_a.img" "$(DESTDIR)/usr/lib/firmware/w202ds/modem/ch_sys_a.img"
+	install -D -m 0644 "../firmware/boot-prepare/vbmeta.bin" "$(DESTDIR)/usr/lib/firmware/w202-diag/vbmeta.bin"
+	install -D -m 0644 "../firmware/boot-prepare/vboot-key-hash.bin" "$(DESTDIR)/usr/lib/firmware/w202-diag/vboot-key-hash.bin"
 
 $(OUT)/w202-modem-storage: runtime/w202-modem-storage.c ../../userspace-common/source/native.h Makefile | $(OUT)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Wno-unused-function -Wno-misleading-indentation -I../../userspace-common/source $< $(STORAGE_LDFLAGS) -o "$@"

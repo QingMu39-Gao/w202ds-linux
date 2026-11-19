@@ -107,10 +107,38 @@ command_ready (MMBaseModem *modem, GAsyncResult *res, GTask *task)
         }
         mm_3gpp_pdp_context_active_list_free (contexts);
         if (active) {
-            connect_fail (task, g_error_new_literal (MM_CORE_ERROR, MM_CORE_ERROR_IN_PROGRESS,
-                                                    "CID1 already active; stop its current owner first"));
+            /* LTE/5G attachment may already activate the default context.
+             * Check its profile before binding M-ETHER; never redefine a live
+             * context or disconnect an unrelated APN. The free data-port and
+             * pending-operation checks still exclude another MM owner. */
+            ctx->step = 5;
+            connect_step (task);
             return;
         }
+    } else if (ctx->step == 5) {
+        GList *contexts, *item;
+        gboolean matching = FALSE;
+
+        contexts = mm_3gpp_parse_cgdcont_read_response (response, &error);
+        if (error) {
+            connect_fail (task, error);
+            return;
+        }
+        for (item = contexts; item; item = item->next) {
+            MM3gppPdpContext *pdp = item->data;
+            if (pdp->cid == 1 && pdp->pdp_type == MM_BEARER_IP_FAMILY_IPV4 &&
+                !g_ascii_strcasecmp (pdp->apn ? pdp->apn : "", ctx->apn))
+                matching = TRUE;
+        }
+        mm_3gpp_pdp_context_list_free (contexts);
+        if (!matching) {
+            connect_fail (task, g_error_new_literal (MM_CORE_ERROR, MM_CORE_ERROR_IN_PROGRESS,
+                                                    "Active CID1 has a different APN or IP family"));
+            return;
+        }
+        ctx->step = 3;
+        connect_step (task);
+        return;
     } else if (ctx->step == 4) {
         g_autofree gchar *address = NULL;
         g_autofree gchar *dns1 = NULL;
@@ -172,8 +200,12 @@ connect_step (GTask *task)
         ctx->activation_attempted = TRUE;
         command = "+CGACT=1,1";
         break;
-    case 3: command = "+CGDATA=\"M-ETHER\",1"; break;
+    case 3:
+        ctx->activation_attempted = TRUE;
+        command = "+CGDATA=\"M-ETHER\",1";
+        break;
     case 4: command = "+CGCONTRDP=1"; break;
+    case 5: command = "+CGDCONT?"; break;
     default: g_assert_not_reached ();
     }
     /* Finish each modem command before checking cancellation, then roll back.

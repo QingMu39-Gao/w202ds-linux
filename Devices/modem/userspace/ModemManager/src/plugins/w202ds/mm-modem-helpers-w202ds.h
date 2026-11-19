@@ -12,6 +12,7 @@ typedef enum {
 } MMW202dsSimAction;
 
 GRegex *mm_w202ds_sim_urc_regex_new (void);
+MMSignal *mm_w202ds_cesq_nr_signal (const gchar *response);
 MMW202dsSimAction mm_w202ds_sim_check_action (gboolean                  has_sim,
                                              MMModemState              state,
                                              MMModemStateFailedReason  failed_reason,

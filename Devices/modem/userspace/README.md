@@ -22,6 +22,11 @@ make OUT=/path/to/native-tests check
 
 PolicyKit action 固定安装到目标系统的 `/usr/share/polkit-1/actions/`，不继承交叉 SDK 的 pkg-config 路径；重复构建会清除旧输出中的错误策略路径，保留其他已暂存的基带工具。
 
+LTE/5G 自动附着可能预先激活 CID1。插件先确认没有其他 MM 数据端口所有者，
+再读取活动上下文：只有 APN 与请求相同且为 IPv4 时才绑定 M-ETHER，
+不重复定义或激活该上下文；不匹配时拒绝连接，保留原上下文。
+APN、自动连接及路由由 NetworkManager/KDE 的用户连接配置决定，硬件开关不改写它们。
+
 目标系统需要 systemd、libc、kmod、iproute2、util-linux/loop、匹配模块和本机合法固件/NV 输入。APN 默认空，独立启动准备默认关闭；安装不启用服务或提供私有输入。
 
 运行桥接与 Linux 工具保持 ABI 分离，原厂 Bionic 程序和库不随源码发布。NV 镜像长度、头和校验和必须有效，损坏输入直接报错。硬件运行配置见 [RUNTIME.md](RUNTIME.md)，服务启用、权限与连接策略由系统集成者定义。SIM 适配见 [插件测试说明](ModemManager/src/plugins/w202ds/tests/README.md)。IPv6、双卡、热拔卡和长期稳定性仍需验证。
@@ -33,3 +38,8 @@ PolicyKit action 固定安装到目标系统的 `/usr/share/polkit-1/actions/`�
 `w202-modem-ordered.conf` 禁止 udev 按设备别名抢先加载基带模块，显式服务加载仍允许。IPC 驱动须在 Trusty core 创建子设备之前注册，避免传输层在接收队列尚不存在时启动。
 
 私有运行目录保留 root 所有权；`private-root` 按当前系统的 `w202modem` 组恢复目录遍历权限和私有设备访问权限。不能依赖归档中的数字 UID/GID，也不能将代码目录改为服务账号可写。
+
+AT readiness ordering belongs to this board component. Its ModemManager drop-in
+orders initial probing after `w202-modem-runtime.service` when both jobs are
+scheduled, without requiring hardware startup or pulling it in. GNOME, KDE and
+console installations reuse this mechanism; desktop overlays do not implement it.

@@ -176,6 +176,10 @@ case "$operation" in
         # No unload/unbind path: these modules remain until the next OS reboot.
         ;;
     private-root)
+        # Provisioned archives may carry a restrictive parent mode. The
+        # unprivileged runtime must traverse this shared, non-private parent;
+        # private descendants retain their own restricted permissions.
+        install -d -m 0755 -o root -g root /var/lib/w202ds
         # Private input archives have no portable service UID/GID. Resolve the
         # current distro identity before dropping privileges into the runtime.
         # Keep code root-owned and non-writable by the service account.
