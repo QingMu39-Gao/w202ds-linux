@@ -1,9 +1,58 @@
 #!/bin/sh
 # Hardware readiness only; NetworkManager or the selected network policy owns connections.
 set -eu
+
+factory_mac() (
+    nv=/dev/disk/by-partlabel/prodnv
+    if ! test -b "$nv"; then
+        # The partition node may be ready before udev creates its label link.
+        for uevent in /sys/class/block/mmcblk*p*/uevent; do
+            test -r "$uevent" && grep -qx 'PARTNAME=prodnv' "$uevent" || continue
+            partition=${uevent%/uevent}
+            nv=/dev/${partition##*/}
+            break
+        done
+    fi
+    test -b "$nv" || exit 1
+    dir=$(mktemp -d /run/w202-wifi-nv.XXXXXX) || exit 1
+    mounted=false
+    trap 'if $mounted; then umount -n "$dir"; fi; rmdir "$dir"' EXIT
+    mount -n -t ext4 -o ro,noload,nosuid,nodev,noexec "$nv" "$dir" || exit 1
+    mounted=true
+    test -f "$dir/wifimac.txt" && test ! -L "$dir/wifimac.txt" || exit 1
+    # The factory file normally has no newline. Validate the whole address.
+    mac=$(head -c 19 "$dir/wifimac.txt") || exit 1
+    hex='[0123456789abcdefABCDEF]'
+    even='[02468aceACE]'
+    case "$mac" in
+        00:00:00:00:00:00) exit 1 ;;
+        $hex$even:$hex$hex:$hex$hex:$hex$hex:$hex$hex:$hex$hex) ;;
+        *) exit 1 ;;
+    esac
+    umount -n "$dir" || exit 1
+    mounted=false
+    printf '%s\n' "$mac"
+)
+
+prepare_factory_mac() (
+    # Keep explicit device configuration; the /run file also covers driver reloads.
+    if modprobe -c | grep -Eq '^options[[:space:]]+sprd[-_]wlan[-_]combo[[:space:]]+(.*[[:space:]])?factory_mac='; then
+        exit 0
+    fi
+    mac=$(factory_mac) || exit 1
+    mkdir -p /run/modprobe.d || exit 1
+    config=$(mktemp /run/modprobe.d/.w202-wifi-mac.XXXXXX) || exit 1
+    trap 'rm -f "$config"' EXIT
+    printf 'options sprd_wlan_combo factory_mac=%s\n' "$mac" > "$config" || exit 1
+    mv -f "$config" /run/modprobe.d/50-w202-wifi-factory-mac.conf
+)
+
 for name in gnssmodem.bin wcnmodem.bin wifi_board_config.ini; do
     test -s "/lib/firmware/$name" || { echo "Missing Wi-Fi firmware: $name" >&2; exit 1; }
 done
+if ! prepare_factory_mac; then
+    echo 'No valid Wi-Fi MAC found in prodnv; using driver defaults' >&2
+fi
 modprobe sha256
 modprobe wcn_bsp
 modprobe sprd_wlan_combo

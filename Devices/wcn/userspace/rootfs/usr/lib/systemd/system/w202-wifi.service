@@ -5,6 +5,7 @@ After=local-fs.target systemd-udev-trigger.service
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/w202-wifi-start
+PrivateMounts=yes
 RemainAfterExit=yes
 TimeoutStartSec=45
 
