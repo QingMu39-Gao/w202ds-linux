@@ -54,6 +54,7 @@ class ResidentTest(unittest.TestCase):
         u.mem_write(0xb50fcb98,struct.pack('<5H',1400,3484,200,470,4))
         u.mem_write(0xb56bc00a,struct.pack('<HH',1200,1920))
         u.mem_write(0xb56bb088,struct.pack('<Q',0xb0000000))
+        u.mem_write(0xb56bae24,b'\x01')
         u.mem_write(0xb50ffc9e,b'\x08')
         # Cold boot has a probed controller but no inherited scanout layer.
         for offset,value in ((0,0x600),(0x18,0x078004b0)):
@@ -98,6 +99,18 @@ class ResidentTest(unittest.TestCase):
                 self.assertEqual(reload,self.watchdog_ms*32768//1000)
                 state['display'].append('lcd');ret(-1 if lcd_fail else 0)
             elif pc==0xb5089bfc: ret(0xdeaddeaddeaddead if bad_panel else 0xb56bc000)
+            elif pc==0xb5088a6c:
+                self.assertEqual(bytes(uc.mem_read(x0,5)),b'logo\0')
+                self.assertEqual(bytes(uc.mem_read(x1,14)),b'boot_logo.bmp\0')
+                state['display'].append('logo');ret(-1)
+            elif pc==0xb508796c:
+                self.assertEqual((x0,x1),(0,0))
+                state['display'].append('cursor');ret()
+            elif pc==0xb5087d98:
+                label=bytes(uc.mem_read(x0,32)).split(b'\0',1)[0]
+                state['display'].append(('mode',label.decode('ascii')));ret()
+            elif pc==0xb5021540:
+                state['display'].append(('delay',x0));ret()
             elif pc==0xb508868c:
                 # Run the actual native lcd_enable body; model only its
                 # allocator and the display hardware reached by the flip.
@@ -144,6 +157,7 @@ class ResidentTest(unittest.TestCase):
 
         for addr in set([0xb50405ec,0xb503f5d0,0xb50932a0,0xb5086e5c,0xb5089bfc,0xb50035a4,
                          0xb508868c,0xb5033434,0xb50335a4,0xb5089168,
+                         0xb5088a6c,0xb508796c,0xb5087d98,0xb5021540,
                          0xb506ce54,0xb506cf70,0xb506d0dc,0xb5093220,0xb500b904,0xb5004dc0,
                          0xb5035e94,0xb5035c78,0xb500e11c,0xb5006674,0xb5012a80,native]):
             u.hook_add(UC_HOOK_CODE,hardware,begin=addr,end=addr)
@@ -218,8 +232,13 @@ class ResidentTest(unittest.TestCase):
         return state
 
     def test_normal_and_external_reset_reach_sec(self):
-        for mode in (2,16):
-            with self.subTest(mode=mode): self.assertTrue(self.run_mode(mode)['entry'])
+        for mode, name in ((2,'NORMAL_MODE'),(16,'EXT_RSTN_REBOOT_MODE')):
+            with self.subTest(mode=mode):
+                state=self.run_mode(mode)
+                self.assertTrue(state['entry'])
+                self.assertEqual(state['display'],
+                                 ['stop-watchdog','lcd','logo','flip','cursor',
+                                  ('mode',f'LK MODE: {name}'),('backlight',70),('delay',750)])
 
     def test_recovery_fastboot_charging_and_other_modes_stay_native(self):
         for mode in (4,5,7,3):
