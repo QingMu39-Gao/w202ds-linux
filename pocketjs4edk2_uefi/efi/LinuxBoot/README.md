@@ -31,4 +31,11 @@ options=systemd.unit=graphical.target
 
 `/chosen/w202,uefi-load-us` 保存六个大端 u64 阶段耗时，供启动后分析。新版配置路径需真机验证；编译和主机解析测试不能替代上机验收。
 
+EFI 在 boot-output 区域显示打开 ESP、读取配置、加载和校验内核/initramfs、准备交接等
+真实阶段。文字调用公共 HII/GOP 适配，不改变显示模式或复位 DSI；系统字体按原始尺寸
+绘制。最后一行保留到 Linux fbcon 接管，企鹅出现之前也能看出当前加载阶段。这里是 EFI
+日志，Linux 自身的早期 printk 仍需等 fbcon 注册后显示。
+`/chosen/w202,efi-progress-lines` 和 `w202,efi-progress-status` 记录准备 DT 时已成功显示的
+行数与 EFI 状态。缺少可用字体协议时继续启动，并保留失败状态供启动后核对。
+
 公共配置解析、根分区和显示协议位于 [common](common/readme.md)。平台地址、GOP/DPU、PMIC 和 ARM64 交接留在本目录。

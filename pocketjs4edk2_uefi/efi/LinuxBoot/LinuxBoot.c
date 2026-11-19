@@ -20,6 +20,7 @@
 #include "common/include/pj4edk2_linux_chosen.h"
 #include "common/include/pj4edk2_linux_config.h"
 #include "common/include/pj4edk2_linux_fdt.h"
+#include "common/edk2/Progress.h"
 
 #ifdef W202_LINUX_SERVER
 #define PROFILE "server"
@@ -34,6 +35,27 @@
 #endif
 VOID W202EnterKernel(UINT64 Entry, UINT64 Dtb);
 EFI_STATUS LinuxStopWatchdog(VOID);
+STATIC PJ4EDK2_EFI_PROGRESS mProgress;
+STATIC EFI_STATUS mProgressStatus=EFI_NOT_READY;
+
+STATIC VOID ProgressStart(EFI_SYSTEM_TABLE *System) {
+  PJB_GUID Wire=PJB_BOOT_DISPLAY_GUID; EFI_GUID Guid;
+  PJB_BOOT_DISPLAY *Display=NULL; EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
+  UINT32 Cells[20]; UINTN I;
+  CopyMem(&Guid,&Wire,sizeof(Guid));
+  for (I=0;I<System->NumberOfTableEntries;I++)
+    if (CompareGuid(&Guid,&System->ConfigurationTable[I].VendorGuid))
+      Display=System->ConfigurationTable[I].VendorTable;
+  if (!LinuxDisplayCells(Display,Cells)) return;
+  mProgressStatus=gBS->LocateProtocol(&gEfiGraphicsOutputProtocolGuid,NULL,(VOID **)&Gop);
+  if (!EFI_ERROR(mProgressStatus))
+    mProgressStatus=Pj4edk2ProgressInit(&mProgress,Gop,Display->x,Display->y,
+                                      Display->width,Display->height);
+  DEBUG((DEBUG_WARN,"LINUX_EFI progress init=%r\n",mProgressStatus));
+}
+STATIC VOID Progress(CONST CHAR16 *Line) {
+  if (mProgress.Gop) mProgressStatus=Pj4edk2ProgressLine(&mProgress,Line);
+}
 
 STATIC EFI_STATUS Open(EFI_FILE_PROTOCOL *Root, CONST CHAR16 *Path,
                        EFI_FILE_PROTOCOL **File, UINT64 *Bytes) {
@@ -216,14 +238,13 @@ STATIC EFI_STATUS PrepareDtb(CONST VOID *Source,UINT64 InitrdBytes,EFI_SYSTEM_TA
     EFI_STATUS Status=PrepareDisplay(Dtb,Chosen,System);
     if (EFI_ERROR(Status)) return Status;
   }
-  /* Per-phase durations, retained for asynchronous post-boot inspection.
-   * Setup, kernel read, kernel CRC/zero, initrd read, initrd CRC, DT prepare.
-   * No display or serial progress printing on the payload read path.
-   */
+  /* Per-phase durations and successful GOP/HII progress writes. */
   for (I=0;I<5;++I) LoadTimes[I]=cpu_to_fdt64(Times[I]);
   LoadTimes[5]=cpu_to_fdt64(GetTimeInNanoSecond(GetPerformanceCounter()-PrepareStarted)/1000);
   Chosen=fdt_path_offset(Dtb,"/chosen");
   if (fdt_setprop(Dtb,Chosen,"w202,uefi-load-us",LoadTimes,sizeof(LoadTimes))) return EFI_VOLUME_CORRUPTED;
+  if (fdt_setprop_u32(Dtb,Chosen,"w202,efi-progress-lines",mProgress.Lines) ||
+      fdt_setprop_u64(Dtb,Chosen,"w202,efi-progress-status",mProgressStatus)) return EFI_VOLUME_CORRUPTED;
   return fdt_pack(Dtb)?EFI_VOLUME_CORRUPTED:EFI_SUCCESS;
 }
 STATIC UINT64 PhaseUs(UINT64 *Previous) {
@@ -265,14 +286,17 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE Image,EFI_SYSTEM_TABLE *System) {
   UINT8 Header[4096],Kernel[64],Meta[32]; UINT32 KBytes,RBytes,DBytes;
   VOID *Dtb=NULL; LINUX_IMAGE Layout; CONST CHAR8 *Phase="esp";
   DEBUG((DEBUG_WARN,"LINUX_EFI begin profile=%a\n",PROFILE));
+  ProgressStart(System);
+  Progress(L"Linux EFI: opening system partition");
   __asm__ volatile("mrs %0, CurrentEL":"=r"(El));
-  if (El!=8) return EFI_UNSUPPORTED;
+  if (El!=8) { Status=EFI_UNSUPPORTED; goto Done; }
   Status=gBS->HandleProtocol(Image,&gEfiLoadedImageProtocolGuid,(VOID **)&Loaded); if (EFI_ERROR(Status)) goto Done;
   Status=gBS->HandleProtocol(Loaded->DeviceHandle,&gEfiPartitionInfoProtocolGuid,(VOID **)&Part); if (EFI_ERROR(Status)) goto Done;
   if (Part->Type!=PARTITION_TYPE_GPT ||
       !CompareGuid(&Part->Info.Gpt.PartitionTypeGUID,&gEfiPartTypeSystemPartGuid)) { Status=EFI_NO_MAPPING; goto Done; }
   Status=gBS->HandleProtocol(Loaded->DeviceHandle,&gEfiSimpleFileSystemProtocolGuid,(VOID **)&Fs); if (EFI_ERROR(Status)) goto Done;
   Status=Fs->OpenVolume(Fs,&Root); if (EFI_ERROR(Status)) goto Done;
+  Progress(L"Linux EFI: reading boot configuration");
   Phase="config"; Status=LoadConfig(Root,Loaded,&Config);
   if (!EFI_ERROR(Status)) {
     Configured=TRUE; KernelOffset=0; CopyMem(RootPartuuid,Config.root_partuuid,sizeof(RootPartuuid));
@@ -284,11 +308,13 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE Image,EFI_SYSTEM_TABLE *System) {
   if (!pj4edk2_linux_partuuid_valid(RootPartuuid,36)) { Status=EFI_VOLUME_CORRUPTED; goto Done; }
   RootPartuuid[36]=0;
   }
+  Progress(L"Linux EFI: checking payload metadata");
   Phase="manifest"; Status=Open(Root,Configured?ConfigPath(Config.metadata,Path):META_PATH,&File,&Bytes); if (EFI_ERROR(Status)) goto Done;
   if (Bytes!=sizeof(Meta)) { Status=EFI_VOLUME_CORRUPTED; goto Done; }
   Status=Read(File,0,Bytes,Meta); File->Close(File); File=NULL; if (EFI_ERROR(Status)) goto Done;
   if (CompareMem(Meta,"W202LX01",8)) { Status=EFI_VOLUME_CORRUPTED; goto Done; }
   KBytes=ReadUnaligned32((UINT32 *)(Meta+8)); RBytes=ReadUnaligned32((UINT32 *)(Meta+12)); DBytes=ReadUnaligned32((UINT32 *)(Meta+16));
+  Progress(L"Linux EFI: loading device tree");
   Phase="dtb"; Status=Open(Root,Configured?ConfigPath(Config.dtb,Path):L"\\EFI\\W202DS\\LINUX.DTB",&File,&Bytes); if (EFI_ERROR(Status)) goto Done;
   if (Bytes!=DBytes || Bytes<sizeof(struct fdt_header) || Bytes>0x100000) { Status=EFI_BAD_BUFFER_SIZE; goto Done; }
   Dtb=AllocatePool((UINTN)Bytes); if (!Dtb) { Status=EFI_OUT_OF_RESOURCES; goto Done; }
@@ -307,8 +333,10 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE Image,EFI_SYSTEM_TABLE *System) {
   Status=LinuxParseImage(Header,sizeof(Header),Kernel,sizeof(Kernel),BootBytes,&Layout); if (EFI_ERROR(Status)) goto Done;
   if (Layout.KernelBytes!=KBytes || Layout.RamdiskBytes!=RBytes) { Status=EFI_CRC_ERROR; goto Done; }
   Times[0]=PhaseUs(&PhaseStarted);
+  Progress(L"Linux EFI: loading kernel");
   Phase="kernel"; Status=Read(Boot,KernelOffset,KBytes,(VOID *)(UINTN)Layout.Entry); if (EFI_ERROR(Status)) goto Done;
   Times[1]=PhaseUs(&PhaseStarted);
+  Progress(L"Linux EFI: verifying kernel");
   Status=Crc((VOID *)(UINTN)Layout.Entry,KBytes,ReadUnaligned32((UINT32 *)(Meta+20))); if (EFI_ERROR(Status)) goto Done;
   ZeroMem((VOID *)(UINTN)(Layout.Entry+KBytes),(UINTN)(Layout.MemoryBytes-KBytes));
   Times[2]=PhaseUs(&PhaseStarted);
@@ -317,16 +345,23 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE Image,EFI_SYSTEM_TABLE *System) {
     Phase="initrd-open"; Status=Open(Root,ConfigPath(Config.initramfs,Path),&Boot,&Bytes); if (EFI_ERROR(Status)) goto Done;
     if (Bytes!=RBytes) { Status=EFI_CRC_ERROR; goto Done; }
   }
+  Progress(L"Linux EFI: loading initramfs");
   Phase="initrd"; Status=Read(Boot,Configured?0:Layout.RamdiskOffset,RBytes,(VOID *)(UINTN)LINUX_INITRD_BASE); if (EFI_ERROR(Status)) goto Done;
   Times[3]=PhaseUs(&PhaseStarted);
+  Progress(L"Linux EFI: verifying initramfs");
   Status=Crc((VOID *)(UINTN)LINUX_INITRD_BASE,RBytes,ReadUnaligned32((UINT32 *)(Meta+24))); if (EFI_ERROR(Status)) goto Done;
   if (*(volatile UINT32 *)(UINTN)LINUX_INITRD_BASE!=0x184c2102) { Status=EFI_UNSUPPORTED; goto Done; }
   Times[4]=PhaseUs(&PhaseStarted);
+  Progress(L"Linux EFI: preparing kernel handoff");
   Phase="prepare"; Status=PrepareDtb(Dtb,RBytes,System,Times,PhaseStarted,RootPartuuid,Configured?Config.options:NULL); if (EFI_ERROR(Status)) goto Done;
   Boot->Close(Boot); Boot=NULL; Root->Close(Root); Root=NULL; FreePool(Dtb); Dtb=NULL;
   DEBUG((DEBUG_WARN,"LINUX_EFI ready profile=%a kernel=%u initrd=%u entry=%lx elapsed_ms=%Lu\n",PROFILE,KBytes,RBytes,Layout.Entry,GetTimeInNanoSecond(GetPerformanceCounter()-Started)/1000000));
+  Progress(L"Linux EFI: starting Linux; waiting for framebuffer console");
+  Pj4edk2ProgressClose(&mProgress);
   Phase="entry"; Status=ExitToKernel(Image,Layout.Entry);
 Done:
+  if (EFI_ERROR(Status)) Progress(L"Linux EFI: boot failed; returning to menu");
+  Pj4edk2ProgressClose(&mProgress);
   if (File) File->Close(File);
   if (Boot) Boot->Close(Boot);
   if (Root) Root->Close(Root);

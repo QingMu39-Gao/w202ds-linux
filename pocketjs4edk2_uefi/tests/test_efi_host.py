@@ -11,6 +11,19 @@ PATHS = runpy.run_path(str(ROOT/'tools/project_paths.py'))
 
 
 class EfiHostTest(unittest.TestCase):
+    def test_efi_progress(self):
+        edk2 = PATHS['edk2_directory']()
+        source = ROOT/'efi/LinuxBoot/common/tests/efi-progress.c'
+        with tempfile.TemporaryDirectory(dir=os.environ.get('W202_TEST_OUTPUT')) as tmp:
+            executable = Path(tmp)/'efi-progress'
+            subprocess.run([
+                os.environ.get('CC', 'cc'), '-std=c11', '-Wall', '-Wextra', '-Werror',
+                '-fshort-wchar', '-fno-builtin', '-DEFIAPI=__attribute__((ms_abi))',
+                '-I'+str(edk2/'MdePkg/Include'), '-I'+str(edk2/'MdePkg/Include/X64'),
+                str(source), '-o', str(executable),
+            ], check=True)
+            subprocess.run([str(executable)], check=True)
+
     def test_watchdog_and_touch_lifecycle(self):
         edk2 = PATHS['edk2_directory']()
         runtime = PATHS['default_repository']('pj4edk2', 'build.sh')
