@@ -1,0 +1,148 @@
+--- a/src/context.c
++++ b/src/context.c
+@@ -788,7 +788,8 @@
+ 	 * there.
+ 	 */
+ 	if (!ctx->capture_memory) {
+-		if (!ctx->conv && surface->backing) {
++		if (!ctx->conv && surface->backing &&
++		    backing_matches_capture(ctx, surface->backing)) {
+ 			ctx->capture_memory = V4L2_MEMORY_DMABUF;
+ 			v4l2r_diag(ctx, V4L2R_DIAG_LEVEL_INFO, V4L2R_DIAG_INFO,
+ 				   "capture-memory", 0,
+@@ -799,7 +800,13 @@
+ 			ctx->capture_memory = V4L2_MEMORY_MMAP;
+ 		}
+ 	}
+-	if (!ctx->conv && surface->backing &&
++	surface->copy_backing = !ctx->conv && surface->backing &&
++		ctx->capture_memory == V4L2_MEMORY_MMAP;
++	bool can_copy = surface->copy_backing && surface->backing->nb_planes == 1 &&
++		surface->backing->pixelformat == V4L2_PIX_FMT_NV12 &&
++		v4l2r_format_pixelformat(&ctx->capture_format) == V4L2_PIX_FMT_NV12 &&
++		!V4L2_TYPE_IS_MULTIPLANAR(ctx->capture_format.type);
++	if (!ctx->conv && surface->backing && !can_copy &&
+ 	    (ctx->capture_memory != V4L2_MEMORY_DMABUF ||
+ 	     !backing_matches_capture(ctx, surface->backing))) {
+ 		v4l2r_diag(ctx, V4L2R_DIAG_LEVEL_ERROR, V4L2R_DIAG_CLIENT,
+@@ -1016,7 +1023,8 @@
+ 	 * DMABUF mode the backing IS the CAPTURE buffer's memory, keep it
+ 	 * too (the buffer holds its own fds, so this only affects the
+ 	 * client-visible export, which must stay stable). */
+-	if (!ctx->conv && ctx->capture_memory != V4L2_MEMORY_DMABUF)
++	if (!ctx->conv && !surface->copy_backing &&
++	    ctx->capture_memory != V4L2_MEMORY_DMABUF)
+ 		v4l2r_surface_free_backing(surface);
+ 
+ 	if (starting) {
+--- a/src/decode.c
++++ b/src/decode.c
+@@ -285,6 +285,8 @@
+ 					   "0x%08x (CAPTURE buffer %u)", surface->id,
+ 					   buffer.index);
+ 			}
++			if (surface->copy_backing && surface->decode_status == VA_STATUS_SUCCESS)
++				surface->decode_status = v4l2r_surface_copy_backing(surface);
+ 			ctx->captures[buffer.index].surface->status =
+ 				VASurfaceReady;
+ 			/* Start the format conversion right away so it
+--- a/src/surface.c
++++ b/src/surface.c
+@@ -12,6 +12,8 @@
+ 
+ #include <errno.h>
+ #include <fcntl.h>
++#include <poll.h>
++#include <linux/dma-buf.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/ioctl.h>
+@@ -456,6 +458,7 @@
+ 		return VA_STATUS_ERROR_ALLOCATION_FAILED;
+ 	for (unsigned int i = 0; i < VIDEO_MAX_PLANES; i++)
+ 		backing->dmabuf_fd[i] = -1;
++
+ 
+ 	/* Try each enumerated decoder until one produces the layout. */
+ 	for (unsigned int n = 0; n < drv->nb_decoders; n++) {
+@@ -847,7 +850,7 @@
+ 		    v4l2r_surface_convert_backing(drv, surface) !=
+ 		    VA_STATUS_SUCCESS)
+ 			return VA_STATUS_ERROR_OPERATION_FAILED;
+-	} else if (surface->ctx && surface->capture_index >= 0) {
++	} else if (!surface->copy_backing && surface->ctx && surface->capture_index >= 0) {
+ 		return v4l2r_surface_capture_view(surface, need_maps, view);
+ 	}
+ 
+@@ -1068,3 +1071,52 @@
+ 	(void)va_ctx; (void)surface;
+ 	return VA_STATUS_ERROR_UNIMPLEMENTED;
+ }
++
++/* Called under the context mutex after successful CAPTURE DQBUF, before
++ * reporting READY. Reference pixels and metadata remain in CAPTURE storage. */
++VAStatus v4l2r_surface_copy_backing(struct v4l2r_surface *surface)
++{
++	struct v4l2r_frame_view src;
++	struct v4l2r_surface_backing *dst = surface->backing;
++	unsigned int width = surface->width, height = surface->height;
++	struct dma_buf_sync read_sync = { .flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ };
++	struct dma_buf_sync write_sync = { .flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE };
++	VAStatus status = VA_STATUS_ERROR_OPERATION_FAILED;
++
++	if (!dst || v4l2r_surface_capture_view(surface, true, &src) != VA_STATUS_SUCCESS ||
++	    src.pixelformat != V4L2_PIX_FMT_NV12 || dst->pixelformat != V4L2_PIX_FMT_NV12 ||
++	    src.nb_planes != 1 || dst->nb_planes != 1 || (width & 1) || (height & 1) ||
++	    src.width < width || dst->width < width || src.pitch < width || dst->pitch < width ||
++	    src.height < height || dst->height < height ||
++	    (uint64_t)src.pitch * src.height * 3 / 2 > src.plane_size[0] ||
++	    (uint64_t)dst->pitch * dst->height * 3 / 2 > dst->plane_size[0])
++		return status;
++	if (v4l2r_poll_one(dst->dmabuf_fd[0], POLLOUT, V4L2R_POLL_TIMEOUT_MS) < 0)
++		return status;
++	if (!dst->map[0]) {
++		void *map = mmap(NULL, dst->plane_size[0], PROT_READ | PROT_WRITE,
++				MAP_SHARED, dst->dmabuf_fd[0], 0);
++		if (map == MAP_FAILED)
++			return status;
++		dst->map[0] = map;
++	}
++	if (ioctl(src.dmabuf_fd[0], DMA_BUF_IOCTL_SYNC, &read_sync) < 0)
++		return status;
++	if (ioctl(dst->dmabuf_fd[0], DMA_BUF_IOCTL_SYNC, &write_sync) < 0)
++		goto end_read;
++	for (unsigned int row = 0; row < height; row++)
++		memcpy((char *)dst->map[0] + (size_t)row * dst->pitch,
++		       (char *)src.map[0] + (size_t)row * src.pitch, width);
++	for (unsigned int row = 0; row < height / 2; row++)
++		memcpy((char *)dst->map[0] + (size_t)(dst->height + row) * dst->pitch,
++		       (char *)src.map[0] + (size_t)(src.height + row) * src.pitch, width);
++	status = VA_STATUS_SUCCESS;
++	write_sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE;
++	if (ioctl(dst->dmabuf_fd[0], DMA_BUF_IOCTL_SYNC, &write_sync) < 0)
++		status = VA_STATUS_ERROR_OPERATION_FAILED;
++end_read:
++	read_sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
++	if (ioctl(src.dmabuf_fd[0], DMA_BUF_IOCTL_SYNC, &read_sync) < 0)
++		status = VA_STATUS_ERROR_OPERATION_FAILED;
++	return status;
++}
+--- a/src/v4l2_request.h
++++ b/src/v4l2_request.h
+@@ -293,6 +293,8 @@
+ 	/* A finished decode still needs (or is undergoing) format conversion
+ 	 * into the backing. Protected by ctx->mutex. */
+ 	bool convert_pending;
++	/* Preserve early-exported NV12 when decoder padding differs. */
++	bool copy_backing;
+ 	/* Codec scratch, e.g. the AV1 order hint of the decoded frame. */
+ 	uint32_t codec_tag;
+ };
+@@ -869,6 +871,7 @@
+  * conversion chain makes v4l2r_surface_view() present the converted backing
+  * instead. Lets the video processing blit read the raw decoder output (e.g.
+  * packed 10-bit NV15) and fold the downconversion into the same pass. */
++VAStatus v4l2r_surface_copy_backing(struct v4l2r_surface *surface);
+ VAStatus v4l2r_surface_capture_view(struct v4l2r_surface *surface,
+ 				    bool need_maps,
+ 				    struct v4l2r_frame_view *view);

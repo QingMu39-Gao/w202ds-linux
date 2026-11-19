@@ -1,7 +1,18 @@
 --- a/src/codec_h264.c
 +++ b/src/codec_h264.c
-@@ -1018,4 +1018 @@
+@@ -1018,3 +1017,0 @@
 -#if VA_CHECK_VERSION(1, 18, 0)
 -	VAProfileH264High10,
 -#endif
- };
+--- a/src/codec_hevc.c
++++ b/src/codec_hevc.c
+@@ -833 +833,3 @@
+-		.data_byte_offset = slice->slice_data_byte_offset,
++		/* VA counts RBSP bytes; V4L2 counts the submitted EBSP. */
++		.data_byte_offset = slice->slice_data_byte_offset +
++			slice->slice_data_num_emu_prevn_bytes + start_code_offset,
+@@ -1389 +1390,0 @@
+-	VAProfileHEVCMain10,
+@@ -1396 +1397 @@
+-	.nb_profiles = 2,
++	.nb_profiles = 1,

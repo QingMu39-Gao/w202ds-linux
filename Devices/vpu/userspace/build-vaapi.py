@@ -2,6 +2,7 @@
 """Build the pinned native V4L2 Request VA-API driver from source."""
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -23,12 +24,16 @@ def main():
         parser.error('VA-API source does not match the supported commit')
     if subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain'], text=True).strip():
         parser.error('VA-API source has local modifications')
-    out = PROJECT/'output/userspace/vpu'
+    out = (PROJECT/'output/userspace/vpu').resolve()
     copied = out/'vaapi-source'
     if copied.exists():
         shutil.rmtree(copied)
     shutil.copytree(source, copied, ignore=shutil.ignore_patterns('.git'))
-    subprocess.run(['git', 'apply', '--unsafe-paths', '--directory='+str(copied), str(HERE/'source/libva-v4l2-request-w202-profile.patch')], cwd=copied, check=True)
+    for patch in ('profile', 'layout'):
+        subprocess.run(['git', 'apply', '--unidiff-zero',
+                        str(HERE/'source'/('libva-v4l2-request-w202-'+patch+'.patch'))],
+                       cwd=copied,
+                       env=dict(os.environ, GIT_CEILING_DIRECTORIES=str(copied.parent)), check=True)
     sdk = args.sdk.resolve()
     cross = out/'vaapi-arm64.ini'
     libraries = sdk/'usr/lib/aarch64-linux-gnu'
@@ -43,19 +48,23 @@ def main():
         '[built-in options]', 'c_args = '+repr(['--sysroot='+str(sdk), '-ffile-prefix-map='+str(copied)+'=.']),
         'c_link_args = '+repr(flags), '',
     ]))
-    runner = [str(args.proot.resolve()), '-r', str(args.host_root.resolve()), '-b', str(PROJECT),
+    for directory in ('tmp', 'cache'):
+        (out/directory).mkdir(parents=True, exist_ok=True)
+    runner = [str(args.proot.resolve()), '-r', str(args.host_root.resolve()), '-b', str(PROJECT), '-b', str(out),
               '-b', str(sdk), '-b', '/dev', '-b', '/proc', '-w', str(out),
-              '/usr/bin/env', 'PATH=/usr/bin:/bin', '/usr/bin/python3', '/usr/bin/meson']
+              '/usr/bin/env', 'PATH=/usr/bin:/bin', 'TMPDIR='+str(out/'tmp'),
+              'XDG_CACHE_HOME='+str(out/'cache'), '/usr/bin/python3', '/usr/bin/meson']
     build = out/'vaapi-build'
     if build.exists():
         shutil.rmtree(build)
     subprocess.run([*runner, 'setup', str(build), str(copied), '--cross-file', str(cross),
                     '--prefix=/usr', '--buildtype=release', '-Dstrip=true',
-                    '-Ddriverdir=/usr/lib/aarch64-linux-gnu/dri', '-Dcodec_h264=enabled',
-                    *['-Dcodec_'+codec+'=disabled' for codec in ('hevc', 'mpeg2', 'vp8', 'vp9', 'av1')]], check=True)
+                    '-Ddriverdir=/usr/lib/aarch64-linux-gnu/dri',
+                    '-Dcodec_h264=enabled', '-Dcodec_hevc=enabled',
+                    *['-Dcodec_'+codec+'=disabled' for codec in ('mpeg2', 'vp8', 'vp9', 'av1')]], check=True)
     subprocess.run([*runner, 'compile', '-C', str(build), '-j', '4'], check=True)
     subprocess.run([*runner, 'install', '-C', str(build), '--destdir', str(out/'rootfs'), '--no-rebuild'], check=True)
-    (out/'vaapi.json').write_text(json.dumps({'source_commit': PIN, 'codecs': ['h264'],
+    (out/'vaapi.json').write_text(json.dumps({'source_commit': PIN, 'codecs': ['h264', 'hevc-main8'],
                                             'interface': 'V4L2 Media Request / VA-API'}, indent=2)+'\n')
 
 

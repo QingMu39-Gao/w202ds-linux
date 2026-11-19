@@ -12,6 +12,8 @@ make DESTDIR=/path/to/staging install
 
 `source/` 保存原生诊断客户端、测试码流生成器和软件参考工具。`make-avc-fixture.py` 需要 PyAV 和 NumPy；生成的参考不能替代硬件测试。标准接口和当前限制见 [v4l2.md](../source/v4l2.md)。
 
+宿主头文件缺少 HEVC Request 类型时，先从配套的 6.18.35 内核运行 headers_install，再通过 CPPFLAGS=-I<导出目录>/include 运行 make check。
+
 ## 解码器使用率
 
 驱动提供只读 sysfs 属性：
@@ -41,6 +43,19 @@ python3 build-vaapi.py --sdk /path/to/target-sdk \
 
 宿主 SDK 需要 Python、Meson、Ninja、pkg-config 和 ARM64 交叉编译器；目标
 SDK 需要 libc、Linux UAPI、libva 和 libdrm 开发文件。输出统一在工程
-`output/userspace/vpu`，安装 `v4l2_request_drv_video.so`。仅启用已验证的
-H.264 8-bit Baseline/Main/High，不广告 High10 或尚未接入的其他解码器。
+`output/userspace/vpu`，安装 `v4l2_request_drv_video.so`。启用 H.264 8-bit
+Baseline/Main/High 和受限 HEVC Main，不广告 H.264 High10 或 HEVC Main10。
 桥接通过标准 Media Request 调用驱动，不恢复 Android/Bionic worker。
+
+构建副本依次应用 `libva-v4l2-request-w202-profile.patch` 和
+`libva-v4l2-request-w202-layout.patch`。前者收窄 profile，并把 HEVC 的 VA RBSP
+头部字节偏移转换为提交到 V4L2 的 EBSP 偏移，计入 emulation-prevention 与起始码。
+后者处理应用在 codec／CTU 布局明确前就导出 surface 的情况：布局相同直接导入
+DMA-BUF；不同则保留原生 CAPTURE 和参考辅助区，成功解码后同步并复制可见 NV12
+到已导出的稳定 backing，再报告完成。这条兼容路径有 CPU 复制开销，不能称零拷贝。
+
+`make check` 包括独立范围 oracle 和 H.264／HEVC 参数边界回归；诊断目标包括
+`w202-vpu-request-hevc`，支持显式 MMAP／DMA-BUF 测试。离线检查不能代替硬件像素验证。
+HEVC 支持完整单 slice 的 WPP，前端校验当前 Request 的入口数量和长度。
+tiles、多 slice、scaling lists、PCM、10-bit 和 CTU16+SAO 仍拒绝，
+具体资格范围见 [V4L2 记录](../source/v4l2.md)。

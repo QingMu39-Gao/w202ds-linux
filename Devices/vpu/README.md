@@ -1,5 +1,14 @@
 # w202ds-vpu-driver（视频编解码器）
 
+当前源码为 V14（`w202ds-vpu-codec-v14-hevc-ipb`）：在 V13 H.264 能力上增加
+非 IDR I、多 slice 共用 CAPTURE，以及 HEVC Main 8-bit 单 slice I/P/B 和 WPP。
+2026-11-15 的最终真机回归共 756 帧 NV12 与软件参考逐字节一致，990 次作业／IRQ
+完成，零 fault／timeout。HEVC 覆盖 CTU32/64、640×360、720p 和 1080p；
+CTU16 仅关闭 SAO 的组合通过，开启 SAO 会明确拒绝。tiles、HEVC 多 slice、
+scaling lists、PCM 和 10-bit 尚不支持，HEVC 长期参考尚无像素资格覆盖。
+本轮模块与 VA-API 桥仅用于临时加载测试；网页实测及具体范围见
+[V14 记录](source/v4l2.md)。下表和后续 V9～V13 说明保留为历史记录。
+
 ```text
 vpu/
 ├── README.md
@@ -13,6 +22,8 @@ vpu/
 │   ├── w202_vpu_ranges.c            # 原生作业 SG 物理范围别名校验
 │   ├── w202_vpu_h264.c             # Baseline/Main/High、I/P/B、加权、多参考、8×8 和 scaling
 │   ├── w202_vpu_h264_cabac.h        # 标准 CABAC 初始化数据，按硬件顺序排列
+│   ├── w202_vpu_hevc.c             # HEVC Main 8-bit、I/P/B、WPP、TMVP 和加权参考
+│   ├── w202_vpu_hevc_cabac.h       # HEVC CABAC 初始化数据
 │   ├── w202_vpu_video.c             # V4L2/vb2/Request 实验前端
 │   ├── w202_vpu_native.h            # 共享作业、DMA 导入和复位接口
 │   ├── w202_vpu*.h                  # 公共头文件及私有缓冲 ABI
@@ -35,11 +46,11 @@ vpu/
 | 普通播放器与浏览器硬件解码 | 受限 H.264 短测通过 | FFmpeg 32 帧，Chrome 157 与 Firefox ESR 153 各三组 24 帧原始 NV12 匹配软件参考；两浏览器均有实际 VPU 作业／IRQ 证据。使用独立 profile、VA-API 桥与进程级沙箱调试例外，长期和默认配置未验收。 |
 | Chrome B 站播放 | 1080p30 High 硬解已观测 | 两条 1080p 视频各采样 25 秒、各增加 750 帧、无新增丢帧，实际使用 VaapiVideoDecoder 且 VPU 作业／IRQ 增长；用户仍反馈画面不流畅，流畅度未验收。默认 AV1 仍走软件。 |
 | DASH 公开视频播放 | 720p30／1080p30 High 及交互通过 | 切清晰度、前后 seek、暂停恢复通过；整个测试流程累计 10277 帧、丢 13 帧，未完整播放全片。 |
-| HLS／1080p60 | 当前测试失败 | Mux 样本前四个 VPU 作业完成，第五个图像为尚不支持的非 IDR I；未证明 1080p60 实时吞吐。 |
+| HLS／1080p60 | V13 历史测试失败 | Mux 样本遇到非 IDR I 后失败；V14 已加入该语法，网站样本仍需重新验收，未证明 1080p60 实时吞吐。 |
 | 视频编码 | 待验证 | 尚无编码功能验收结果。 |
 | 其他视频格式 | 待验证 | 当前结果只覆盖 H.264 / AVC。 |
 
-上表为历史验收记录，不能代替当前 rootfs 的应用集成验收。当前驱动已实测 Baseline/Main/High、I/P/B、裁剪，MMAP 与 DMA-BUF 两种路径共 14 例逐字节匹配；旧 worker 服务永久屏蔽。
+上表为历史验收记录，不能代替当前 rootfs 的应用集成验收。此前已实测 Baseline/Main/High、I/P/B、裁剪，MMAP 与 DMA-BUF 两种路径共 14 例逐字节匹配；旧 worker 服务永久屏蔽。
 
 历史记录更新日期：2026-11-08（UTC）
 
@@ -53,7 +64,7 @@ vpu/
 runtime PM、复位和 DMA 隔离。2026-11-07 的独立 Baseline/Main 单 slice IDR/P，
 以及 Main 单 L0/L1 短期参考、非参考 spatial-direct B 已通过原生真机像素测试。
 V9 的 32 项标准 Request、SG 别名拒绝、实际 DMA 取消／恢复及 FFmpeg 四组 32 帧均通过。
-本轮临时加载 V13，新增加权、多参考、参考 B 和 temporal direct；B 站 High 原码流及
+V13 轮次临时加载模块，新增加权、多参考、参考 B 和 temporal direct；B 站 High 原码流及
 Chrome 网页硬解通过，92 项 Request 和 FFmpeg 旧用例重跑通过，详细计数见适配文档。
 V8 补 Request 必需的输出校验回调，V9 支持客户端共同 POC
 原点，并在物理别名检查后才写输入 padding。标准链路为
@@ -72,7 +83,7 @@ Firefox 呈现 8 帧、丢帧 0。Firefox 需要进程内绑定匹配 Mesa GLES 
 
 历史源码、候选与证据位于只读研究归档 `archive/linux/vpu-v4l2-20261107-v2/`，
 该轮报告已独立归档。该历史轮次的测试 profile 和临时目录已清理。
-当前 V13 仅临时加载在内存，磁盘仍为 V2，重启后回到 V2；尚未持久安装。
+V13 验证当时仅临时加载在内存，磁盘仍为 V2；该历史状态不代表后续启动的部署版本。
 V13 用例、模块／桥身份、网页和空闲证据见 [validation-v13.json](source/validation-v13.json)。
 V10 历史用例见 [validation-v10.json](source/validation-v10.json)；V13 的完整截图、日志、
 码流和报告保留在本轮 `w202ds-projects/vpu-v4l2-high_20261108/bilibili-high/`。
