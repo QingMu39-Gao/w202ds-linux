@@ -8,7 +8,7 @@
 /* Validate only geometry here; GOP/MMIO/reserved-memory checks are separate. */
 STATIC BOOLEAN LinuxDisplayCells(CONST PJB_BOOT_DISPLAY *D, UINT32 *V) {
   CONST struct pj4edk2_surface Surface={0xb0000000,0x9e4000,9216000,
-    1920,1200,7680,3,0,90};
+    1920,1200,7680,2,0,90}; /* GOP BlueGreenRed: little-endian XRGB8888. */
   struct pj4edk2_region Region;
   if (!D || D->revision!=PJB_BOOT_DISPLAY_REVISION || D->size<sizeof(*D) ||
       D->display_width!=1920 || D->display_height!=1200 || D->rotation!=0 ||
