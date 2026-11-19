@@ -2,6 +2,7 @@
 """Execute the packaged ARM64 native filter, storage loader and SEC shim."""
 import os
 from pathlib import Path
+import runpy
 import struct
 import subprocess
 import unittest
@@ -9,11 +10,13 @@ import zlib
 from unicorn import Uc, UC_ARCH_ARM64, UC_MODE_ARM, UC_HOOK_CODE
 from unicorn import UC_PROT_READ, UC_PROT_WRITE, UC_PROT_EXEC
 from unicorn.arm64_const import *
+from test_splash import LogoPanel
 
 BASE, FD, END = 0x86000000, 0x82800000, 0xb6001000
 PTE, ORIGINAL, EXEC = 0xb5f01180, 0x0060000086000711, 0x0000000086000791
 HANDLERS = {2:0xb500da88, 16:0xb500da88, 4:0xb500db88,
             5:0xb500ddf0, 7:0xb500ded0, 3:0xb500dc80}
+SPLASH_MODES = {2:'NORMAL_MODE', 16:'EXT_RSTN_REBOOT_MODE'}
 
 
 class ResidentTest(unittest.TestCase):
@@ -27,13 +30,20 @@ class ResidentTest(unittest.TestCase):
                        if line.split()[-1]=='crc32')
         cls.return_resume = next((int(line.split()[0],16) for line in symbols.splitlines()
                                   if line.split()[-1]=='lk_return_resume'), None)
-        cls.sec = FD + int(os.environ.get('RAMBOOT_SEC_OFFSET','0x6e78'),0)
+        sec_override = os.environ.get('RAMBOOT_SEC_OFFSET')
+        if sec_override is None:
+            packer = Path(__file__).resolve().parents[4]/'pocketjs4edk2_uefi/tools/mkramboot.py'
+            sec_offset = runpy.run_path(str(packer))['sec_entry'](cls.fd)
+        else:
+            sec_offset = int(sec_override, 0)
+        cls.sec = FD + sec_offset
         cls.watchdog_ms = int(os.environ.get('RAMBOOT_WATCHDOG_MS','180000'))
         cls.preflight = os.environ.get('RESIDENT_PREFLIGHT') == '1'
 
     def run_mode(self, mode, *, corrupt=False, io_fail=False, lcd_fail=False,
                  bad_panel=False, bad_pte=False, handler=None, two_cpus=False,
-                 flip_fail=False, bad_scanout=False, reject_key_input=False):
+                 flip_fail=False, bad_scanout=False, reject_key_input=False,
+                 missing_logo=False):
         u = Uc(UC_ARCH_ARM64, UC_MODE_ARM)
         u.mem_map(BASE, 0x1000000, UC_PROT_READ|UC_PROT_WRITE)
         u.mem_map(FD, 0x800000)
@@ -53,16 +63,17 @@ class ResidentTest(unittest.TestCase):
         u.mem_write(0xb50fccc0,struct.pack('<ii',694,0))
         u.mem_write(0xb50fcb98,struct.pack('<5H',1400,3484,200,470,4))
         u.mem_write(0xb56bc00a,struct.pack('<HH',1200,1920))
-        u.mem_write(0xb56bb088,struct.pack('<Q',0xb0000000))
-        u.mem_write(0xb56bae24,b'\x01')
-        u.mem_write(0xb50ffc9e,b'\x08')
+        panel = LogoPanel(u)
+        panel.missing = missing_logo
         # Cold boot has a probed controller but no inherited scanout layer.
         for offset,value in ((0,0x600),(0x18,0x078004b0)):
             u.mem_write(0x31000000+offset,struct.pack('<I',value))
         native = HANDLERS[mode] if handler is None else handler
+        u.reg_write(UC_ARM64_REG_SP,0xb5e00000)
+        if mode in SPLASH_MODES:
+            panel.select(mode, SPLASH_MODES[mode])
         u.reg_write(UC_ARM64_REG_X0,native)
         u.reg_write(UC_ARM64_REG_X19,mode)
-        u.reg_write(UC_ARM64_REG_SP,0xb5e00000)
         u.reg_write(UC_ARM64_REG_LR,END)
         storage = bytearray(self.flash)
         state = dict(reads=[],writes=[],watchdogs=[],display=[],native=[],entry=False,fastboot=False,
@@ -102,19 +113,15 @@ class ResidentTest(unittest.TestCase):
             elif pc==0xb5088a6c:
                 self.assertEqual(bytes(uc.mem_read(x0,5)),b'logo\0')
                 self.assertEqual(bytes(uc.mem_read(x1,14)),b'boot_logo.bmp\0')
-                state['display'].append('logo');ret(-1)
-            elif pc==0xb508796c:
-                self.assertEqual((x0,x1),(0,0))
-                state['display'].append('cursor');ret()
-            elif pc==0xb5087d98:
-                label=bytes(uc.mem_read(x0,32)).split(b'\0',1)[0]
-                state['display'].append(('mode',label.decode('ascii')));ret()
+                state['display'].append('logo')
             elif pc==0xb5021540:
                 state['display'].append(('delay',x0));ret()
             elif pc==0xb508868c:
                 # Run the actual native lcd_enable body; model only its
                 # allocator and the display hardware reached by the flip.
                 self.assertEqual(state['pmic'].get(0x64420048,0)&0xa,0xa)
+                label = panel.expected_label(SPLASH_MODES[mode])
+                self.assertEqual(panel.screen_label(), bytes(len(label)) if missing_logo else label)
                 state['display'].append('flip')
             elif pc==0xb5033434:
                 self.assertEqual(x0,92);ret(0xb5700000)
@@ -150,16 +157,16 @@ class ResidentTest(unittest.TestCase):
                 self.assertEqual(state['pmic'].get(0x64420048,0)&0xa,0xa,
                                  'native cleanup has no live reset watchdog')
                 state['cleanup']=True;ret()
-            elif pc in (0xb5004dc0,0xb5035e94,0xb5035c78,0xb500e11c): ret()
+            elif pc in (0xb5004dc0,0xb500e11c): ret()
             elif pc==0xb5012a80: state['fastboot']=True;ret()
             elif pc==native: state['native'].append(pc);ret()
             elif pc==0xb5006674: uc.reg_write(UC_ARM64_REG_PC,END)
 
         for addr in set([0xb50405ec,0xb503f5d0,0xb50932a0,0xb5086e5c,0xb5089bfc,0xb50035a4,
                          0xb508868c,0xb5033434,0xb50335a4,0xb5089168,
-                         0xb5088a6c,0xb508796c,0xb5087d98,0xb5021540,
+                         0xb5088a6c,0xb5021540,
                          0xb506ce54,0xb506cf70,0xb506d0dc,0xb5093220,0xb500b904,0xb5004dc0,
-                         0xb5035e94,0xb5035c78,0xb500e11c,0xb5006674,0xb5012a80,native]):
+                         0xb500e11c,0xb5006674,0xb5012a80,native]):
             u.hook_add(UC_HOOK_CODE,hardware,begin=addr,end=addr)
         def crc(uc,pc,size,data):
             seed,addr,n=(uc.reg_read(r) for r in [UC_ARM64_REG_X0,UC_ARM64_REG_X1,UC_ARM64_REG_X2])
@@ -232,13 +239,17 @@ class ResidentTest(unittest.TestCase):
         return state
 
     def test_normal_and_external_reset_reach_sec(self):
-        for mode, name in ((2,'NORMAL_MODE'),(16,'EXT_RSTN_REBOOT_MODE')):
+        for mode in SPLASH_MODES:
             with self.subTest(mode=mode):
                 state=self.run_mode(mode)
                 self.assertTrue(state['entry'])
                 self.assertEqual(state['display'],
-                                 ['stop-watchdog','lcd','logo','flip','cursor',
-                                  ('mode',f'LK MODE: {name}'),('backlight',70),('delay',750)])
+                                 ['stop-watchdog','lcd','logo','flip',('backlight',70),('delay',750)])
+
+    def test_missing_logo_still_reaches_sec_without_splash_delay(self):
+        state = self.run_mode(2, missing_logo=True)
+        self.assertTrue(state['entry'])
+        self.assertEqual(state['display'], ['stop-watchdog','lcd','logo','flip',('backlight',70)])
 
     def test_recovery_fastboot_charging_and_other_modes_stay_native(self):
         for mode in (4,5,7,3):

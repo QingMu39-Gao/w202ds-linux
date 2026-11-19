@@ -291,7 +291,9 @@ class DebuggerTest(unittest.TestCase):
         for data in self.images.values():
             self.assertEqual(API['validate'](data)['kind'],'minimal-ramlk')
             self.assertEqual(pack['validate_sources'](data)['kind'],'minimal-ramlk')
+            self.assertTrue(API['validate'](data)['logo_mode'])
         for offset in (0x310,0x1400,0x114000,0x228000,0x6870,0x12c80,0xe750,
+                       0x1c00,0x1c60,0x87540,
                        API['HEADER_OFFSET']+API['CONFIG'].size):
             with self.subTest(offset=hex(offset)):
                 bad=bytearray(self.images['debug']);bad[offset]^=1

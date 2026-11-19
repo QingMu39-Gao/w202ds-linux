@@ -26,8 +26,6 @@ int resident_ramboot(const char *operation, unsigned mode, uintptr_t handler)
     int (*const lcd_init)(void) = (void *)0xb5086e5c;
     void (*const lcd_enable)(void) = (void *)0xb508868c;
     int (*const lcd_draw_logo)(const char *, const char *) = (void *)0xb5088a6c;
-    void (*const lcd_position)(unsigned, unsigned) = (void *)0xb508796c;
-    void (*const lcd_puts)(const char *) = (void *)0xb5087d98;
     void (*const delay_ms)(uint64_t) = (void *)0xb5021540;
     const volatile uint8_t *const lcd_enabled = (void *)0xb56bae24;
     uintptr_t (*const panel)(void) = (void *)0xb5089bfc;
@@ -81,11 +79,8 @@ int resident_ramboot(const char *operation, unsigned mode, uintptr_t handler)
      * configure a scanout layer. Fastboot used to supply that missing flip
      * before RAMBoot; normal cold boot has no such inherited display.
      * Execute the matching native layer setup before handing it to GOP. */
-    /* The resident route skips the native normal-mode splash handler.
-     * Draw the same bitmap on LK's framebuffer before enabling scanout.
-     * A missing logo asset should still allow the mode line and boot. */
-    if (*lcd_enabled)
-        lcd_draw_logo("logo", "boot_logo.bmp");
+    /* The native bitmap path adds the label before enabling scanout. */
+    int splash_drawn = *lcd_enabled && lcd_draw_logo("logo", "boot_logo.bmp") == 0;
     lcd_enable();
     print("EDK2-RESIDENT: scanout enable=%x addr=%x layer=%x pitch=%u\n",
           DPU_REG(0x2c), DPU_REG(0x30), DPU_REG(0x40), DPU_REG(0x4c));
@@ -108,16 +103,10 @@ int resident_ramboot(const char *operation, unsigned mode, uintptr_t handler)
     }
     print("EDK2-RESIDENT: display ready cpu=%u\n",
           *(const volatile unsigned *)0xb50eed8c);
-    if (*lcd_enabled) {
-        lcd_position(0, 0);
-        lcd_puts(mode == 2 ? "LK MODE: NORMAL_MODE"
-                           : "LK MODE: EXT_RSTN_REBOOT_MODE");
-        backlight(70);
-        /* Let the panel show the text before UEFI takes over the display. */
+    backlight(70);
+    if (splash_drawn)
+        /* Let the panel show the splash before UEFI takes over the display. */
         delay_ms(750);
-    } else {
-        backlight(70);
-    }
 #ifdef W202_RESIDENT_PREFLIGHT
     /* Same cold-boot path and FD; deliberately let the watchdog return to
      * fastboot so the retained SEC/DXE/application trace can be collected. */

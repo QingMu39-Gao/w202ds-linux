@@ -77,6 +77,8 @@ def main():
                              (ext/'hook.bin').read_bytes(), symbols,
                              watchdog=watchdog, usb_recovery=usb, screen=screen,
                              fastboot_flash=a.fastboot_flash, watchdog_ms=a.watchdog_ms)
+    splash = IMAGE['SPLASH']
+    data = splash['install'](data, *splash['build'](out/'splash', a.cross_compile, run))
     (out/'lk-debuger.img').write_bytes(data)
     for name, hang in (('ramboot-smoke', 0), ('ramboot-hang', 1)):
         run(a.cross_compile+'gcc', '-march=armv8-a', f'-DW202_DEBUG_HANG={hang}',
@@ -105,6 +107,7 @@ def main():
                ROOT/'debug/screen.S', ROOT/'debug/screen-probe.S',
                ROOT/'ramboot/probes/probe.ld', ROOT/'ramlk/build.py', ROOT/'ramlk/hook.S']
     sources += [ROOT/'fastboot'/name for name in ('flash.c','download.c','transport.c','flash.h','native.h')]
+    sources += [ROOT/'splash'/name for name in ('image.py','hooks.S','render.c','layout.ld','modes.h')]
     report = {'schema':1, 'board':'w202ds', 'artifact':'lk-debuger.img',
               'bytes':len(data), 'sha256':hashlib.sha256(data).hexdigest(),
               'features':IMAGE['validate'](data), 'hardware_tested':False,

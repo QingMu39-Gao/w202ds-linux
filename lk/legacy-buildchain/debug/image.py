@@ -1,6 +1,10 @@
 """Checked minimal-LK image layout shared with resident firmware packaging."""
 import hashlib
+from pathlib import Path
+import runpy
 import struct
+
+SPLASH = runpy.run_path(str(Path(__file__).resolve().parents[1]/'splash/image.py'))
 
 SIZE = 0x500000
 LEGACY_SHA = 'fe2c7b3f9384453aa9fe68c3646efd1705a221fe17a0e0d4005dd2fa89051a42'
@@ -59,9 +63,11 @@ def validate(data):
     """Verify all unchanged bytes against the pinned, reproducible RAMLK."""
     if len(data) != SIZE:
         raise ValueError('LK image must be exactly 5 MiB')
+    data, logo_mode = SPLASH['remove'](data)
     if sha(data) == LEGACY_SHA:
         return {'kind': 'legacy-ramlk', 'watchdog': False, 'usb_recovery': False,
-                'sdk_oem': False, 'screen': False, 'fastboot_flash': False, 'watchdog_ms': None}
+                'sdk_oem': False, 'screen': False, 'fastboot_flash': False,
+                'logo_mode': logo_mode, 'watchdog_ms': None}
     magic, version, flags, timeout, count, jump, oem, dispatch, digest = CONFIG.unpack_from(data, HEADER_OFFSET)
     if (magic != MAGIC or version not in (1, 2, 3, 4) or flags & ~31 or not flags & SDK_OEM or
             (version < 3 and bool(flags & SCREEN) != (version == 2)) or
@@ -104,6 +110,7 @@ def validate(data):
             'usb_recovery': bool(flags & USB_RECOVERY), 'sdk_oem': True,
             'screen': bool(flags & SCREEN),
             'fastboot_flash': bool(flags & FLASH),
+            'logo_mode': logo_mode,
             'usb_transport_recovery': version >= 4,
             'watchdog_ms': timeout if flags & WATCHDOG else None,
             'code_bytes': count, 'code_sha256': digest.hex()}

@@ -8,9 +8,11 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import runpy
 import struct
+import subprocess
 
 SIZE = 0x500000
 PAYLOAD = 0x228000
@@ -47,6 +49,7 @@ def main():
     p.add_argument('--loader', type=Path, required=True)
     p.add_argument('--image', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--cross-compile', default=os.environ.get('CROSS_COMPILE') or 'aarch64-linux-gnu-')
     p.add_argument('--revision', default='edk2-resident',
                    help='revision of this package, independent of the embedded FD')
     p.add_argument('--preflight', action='store_true',
@@ -78,7 +81,17 @@ def main():
     start = (a.output/'resident-start.bin').read_bytes()
     require(len(loader) == 432 and len(start) == 164, 'incorrect bootstrap size')
     require(loader[:8] == bytes.fromhex('fd7bbca9fd030091'), 'incorrect bootstrap ABI')
-    candidate = bytearray(base)
+    lk_base = base
+    if not base_features['logo_mode']:
+        # Older verified inputs are still usable; install the same native
+        # splash extension used by the standalone build in this build step.
+        splash = MINIMAL['SPLASH']
+
+        def run(*argv):
+            subprocess.run(argv, check=True)
+
+        lk_base = splash['install'](base, *splash['build'](a.output/'splash', a.cross_compile, run))
+    candidate = bytearray(lk_base)
     changes = [(0xf3fc, loader), (0xef40, start), (0xbea10, b'pjs-load\0')]
     require(base[0xbea10:0xbea19] == b'getsocid\0', 'incorrect command table')
     # Native dispatcher keeps its handler table; the filter preserves all
@@ -116,7 +129,8 @@ def main():
     report = {'revision': a.revision, 'status': 'candidate-not-deployed',
               'bytes': len(candidate), 'sha256': sha(candidate),
               'baseline_sha256': sha(base), 'settings_storage': 'esp-files',
-              'lk_base_features': base_features,
+              'lk_base_features': MINIMAL['validate'](lk_base),
+              'splash_added_to_baseline': not base_features['logo_mode'],
               'persistent_logging': False,
               'bundle_sha256': sha(bundle), 'layout': layout,
               'patches': [{'offset': hex(o), 'bytes': len(d)} for o, d in changes],
