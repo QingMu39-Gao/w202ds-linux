@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "base": "project",
+  "rootfs": "output/userspace/audio/rootfs",
+  "required": [
+    "usr/libexec/w202-audio-start",
+    "usr/lib/firmware/w202ds/agdsp.bin",
+    "usr/lib/firmware/aw88166_acf.bin",
+    "usr/lib/firmware/w202ds/vbc-speaker.bin"
+  ],
+  "required_sha256": {
+    "usr/lib/firmware/w202ds/agdsp.bin": "517188f915ab86214de211d519ccd13ae4c31ed3bdfdeeff0d1e9e0dc399b445",
+    "usr/lib/firmware/aw88166_acf.bin": "36173c4963efe4d3f580933bee544bb97754416550f874f67c9bb3894982c10b",
+    "usr/lib/firmware/w202ds/vbc-speaker.bin": "9d766000e1bb0d8292e67c289a796f675c1615046a6d249811f4f82767cd3164"
+  }
+}

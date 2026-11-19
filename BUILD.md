@@ -144,3 +144,19 @@ Rust、模块 BTF 或 objtool 启用时会拒绝导出，以免漏掉所需编�
 - `output/userspace/native/`：宿主测试工具。
 
 `make -C Devices -f userspace.mk all install` 默认按组件暂存；只有显式传入 `DESTDIR` 时才安装到共同的目标根目录。GPU 的 Meson 构建目录同样放在 `output/userspace/gpu/` 下。
+
+## Mandatory board firmware
+
+`make -C Devices -f userspace.mk install` stages controller firmware with the
+board mechanisms. Touch, WCN and immutable CP firmware come from each device's
+firmware directory. The audio install target automatically prepares and
+validates its payloads from the factory inputs recorded in its manifest.
+Supply the owner-provided ACF and DSP XML locally at the documented defaults
+or specify them using AUDIO_ACF and AUDIO_DSP_XML.
+Use `AUDIO_AUDCP`, `AUDIO_ACF`, `AUDIO_DSP_XML` and `AUDIO_FIRMWARE`
+only when explicitly selecting alternative input or output locations.
+
+Each component declares mandatory files and their hashes in `artifacts.json`.
+REIMUKS rejects missing or mismatched firmware and runs the generated firmware
+checks again in the target userspace before publishing a rootfs.
+Private NV, modem delta NV and Android runtime state remain separate owner inputs.

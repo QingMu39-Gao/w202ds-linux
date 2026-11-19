@@ -1,7 +1,7 @@
 # W202DS 扬声器固件
 
 功放型号为 AW88166。AUDCP A/B 完整原厂容器已有归档；本机 ACF 和 speaker XML
-已取得并核对，不随本次新源码增加原厂二进制或 XML。
+需由设备持有者从自己的 factory 镜像提供；默认放在本目录的 vendor/ 下。
 
 `prepare.py` 仅接受已知 SHA256 输入，输出：
 
@@ -25,3 +25,8 @@ DSP selector 由原厂实际 HAL 表确认：XML mode 64、logical ID 75、DSP c
 不能不经裁剪直接当作加载输入。上游 AW88166 不请求独立 monitor 文件。
 输入及输出哈希、来源和已有归档来历保留于 [manifest.json](manifest.json)。
 原厂固件未获得新的再分发许可。
+
+`make -C Devices/audio/userspace install DESTDIR=<staging>` 自动验证原厂输入并准备固件，
+再安装到板级包。中间结果只写入 `output/userspace/audio/firmware`；删除构建输出后
+可以从相同的外部原厂输入重新生成。可通过 `AUDIO_AUDCP`、`AUDIO_ACF`、
+`AUDIO_DSP_XML` 和 `AUDIO_FIRMWARE` 显式指定输入与输出位置。

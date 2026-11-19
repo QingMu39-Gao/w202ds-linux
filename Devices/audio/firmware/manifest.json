@@ -25,23 +25,6 @@
   "missing": [],
   "placement": "Known firmware is stored as regular files beneath this device firmware directory; shared chip firmware has one owner.",
   "imported_from": "w202ds-research/bsp/Devices/audio/firmware",
-  "required_external_inputs": [
-    {
-      "name": "aw883xx_acf.bin",
-      "source": "本机 vendor_a/firmware/aw883xx_acf.bin",
-      "bytes": 432656,
-      "sha256": "36173c4963efe4d3f580933bee544bb97754416550f874f67c9bb3894982c10b",
-      "installed_as": "aw88166_acf.bin",
-      "included_in_repository": false
-    },
-    {
-      "name": "dsp_vbc.xml",
-      "source": "本机 odm_a/etc/audio_params/sprd/dsp_vbc.xml",
-      "bytes": 689593,
-      "sha256": "106f9f6a16a548212b7cf3dff652dbb89e602b1663ae3f8cb2fac7b8cd7bddf9",
-      "included_in_repository": false
-    }
-  ],
   "prepared_outputs": {
     "w202ds/agdsp.bin": {
       "bytes": 5242880,
@@ -64,5 +47,24 @@
     "bytes": 1732,
     "evidence": "32-bit factory audio.primary.whale.so: set_vbc_param, get_audio_param_mode, static table 0x881d0"
   },
-  "monitor": "上游 AW88166 不请求独立 aw883xx_monitor.bin；未将其作为此播放链路的缺项。"
+  "monitor": "上游 AW88166 不请求独立 aw883xx_monitor.bin；未将其作为此播放链路的缺项。",
+  "required_external_inputs": [
+    {
+      "name": "aw883xx_acf.bin",
+      "source": "Factory vendor_a:/firmware/aw883xx_acf.bin",
+      "bytes": 432656,
+      "sha256": "36173c4963efe4d3f580933bee544bb97754416550f874f67c9bb3894982c10b",
+      "installed_as": "aw88166_acf.bin",
+      "included_in_repository": false,
+      "default_path": "vendor/aw883xx_acf.bin"
+    },
+    {
+      "name": "dsp_vbc.xml",
+      "source": "Factory odm_a:/etc/audio_params/sprd/dsp_vbc.xml",
+      "bytes": 689593,
+      "sha256": "106f9f6a16a548212b7cf3dff652dbb89e602b1663ae3f8cb2fac7b8cd7bddf9",
+      "included_in_repository": false,
+      "default_path": "vendor/dsp_vbc.xml"
+    }
+  ]
 }
