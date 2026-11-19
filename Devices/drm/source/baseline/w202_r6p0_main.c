@@ -56,9 +56,12 @@
 #define W202_CURSOR_SIZE 64
 static bool flip_after_latch = true;
 static bool defer_modeset = true;
+static bool adopt_display = true;
 static bool aux_planes;
 module_param(aux_planes, bool, 0444);
 MODULE_PARM_DESC(aux_planes, "Expose experimental r6p0 overlay and cursor KMS planes (default false)");
+module_param(adopt_display, bool, 0444);
+MODULE_PARM_DESC(adopt_display, "Check live inherited display before resetting DPU/DSI/panel (default true)");
 /* Board installation correction, clockwise in input coordinates. Logical
  * KMS coordinates are already landscape; userspace rotation starts at zero.
  * The native scanout rotation is the inverse of this input correction.
@@ -156,6 +159,15 @@ static int w202_prepare_display(struct w202_dpu *d)
 		d->irq_requested = true;
 		writel(d->irq_mask, d->regs + INT_EN);
 	}
+	/* Keep the live panel and its last frame when the complete hardware
+	 * state is compatible. A failed check has not changed DSI or the panel.
+	 */
+	ret = adopt_display ? w202_dsi_adopt(d) : -EOPNOTSUPP;
+	if (!ret) {
+		WRITE_ONCE(d->display_ready, true);
+		return 0;
+	}
+	drm_info(&d->drm, "display handoff: full initialization required (%d)\n", ret);
 	ret = backlight_disable(d->backlight);
 	if (!ret)
 		ret = w202_dsi_start(d);
@@ -691,7 +703,7 @@ static int w202_get_modes(struct drm_connector *connector)
   if (!mode)
    return -ENOMEM;
   mode->type = DRM_MODE_TYPE_DRIVER;
-  if (!i)
+  if (i == d->preferred_mode)
    mode->type |= DRM_MODE_TYPE_PREFERRED;
   drm_mode_probed_add(connector, mode);
  }

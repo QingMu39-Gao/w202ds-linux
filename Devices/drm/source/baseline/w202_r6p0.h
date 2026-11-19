@@ -43,11 +43,13 @@ struct w202_dpu {
 	bool first_frame_visible;
 	bool irq_requested;
 	unsigned int clocks_enabled;
+	unsigned int preferred_mode;
 	int irq;
 };
 
 int w202_dsi_start(struct w202_dpu *d);
 int w202_dsi_claim_clocks(struct w202_dpu *d);
+int w202_dsi_adopt(struct w202_dpu *d);
 int w202_dpu_read_mode(struct w202_dpu *d);
 int w202_dpu_hw_init(struct w202_dpu *d);
 int w202_dsi_set_mode(struct w202_dpu *d, const struct drm_display_mode *mode);

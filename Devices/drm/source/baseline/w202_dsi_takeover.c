@@ -8,6 +8,7 @@
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/io.h>
+#include <linux/ktime.h>
 #include <linux/math64.h>
 #include <linux/mfd/syscon.h>
 #include <linux/mutex.h>
@@ -22,6 +23,7 @@
 
 #include "w202_r6p0.h"
 #include "w202_dsc.h"
+#include "w202_inherited_display.h"
 
 #define DSI_SOFT_RESET			0x04
 #define DSI_MASK_PROTOCOL_INT		0x0c
@@ -115,10 +117,12 @@ struct w202_dsi_state {
 	bool touched;
 	bool dpu_stopped;
 	bool timing_pending;
+	bool adopted;
 	int last_error;
 	char state[24];
 	u32 command_count;
 	u32 pll_freq_khz;
+	u32 host_resets, panel_resets, soft_resets;
 };
 
 struct w202_pll_params {
@@ -607,6 +611,7 @@ static int w202_video_config(struct w202_dsi_state *s)
 	hsa_cycles = hsync * ratio / 1000;
 	hbp_cycles = hbp * ratio / 1000;
 
+	s->soft_resets++;
 	w202_reg_write(s, DSI_SOFT_RESET, 0);
 	w202_reg_update(s, DSI_DPI_VIDEO_FORMAT, GENMASK(5, 0),
 			DSI_VIDEO_FORMAT_DSC);
@@ -654,6 +659,7 @@ static int w202_panel_reset(struct w202_dsi_state *s)
 	if (ret)
 		return ret;
 	msleep(5);
+	s->panel_resets++;
 	gpiod_set_value_cansleep(s->reset_gpio, 0);
 	msleep(2);
 	gpiod_set_value_cansleep(s->reset_gpio, 1);
@@ -778,6 +784,141 @@ int w202_dsi_claim_clocks(struct w202_dpu *d)
 	return ret;
 }
 
+static void w202_inherited_snapshot(struct w202_dpu *d,
+				    struct w202_inherited_display *v)
+{
+	struct w202_dsi_state *s = d->dsi;
+	unsigned int i;
+
+#define DPU_FIELD(field, offset) v->field = readl(d->regs + (offset))
+	DPU_FIELD(version, 0x00);
+	DPU_FIELD(control, 0x08);
+	DPU_FIELD(interface, 0x0c);
+	DPU_FIELD(panel, 0x18);
+	DPU_FIELD(blend, 0x1c);
+	DPU_FIELD(layers, 0x2c);
+	DPU_FIELD(address, 0x30);
+	DPU_FIELD(layer_control, 0x40);
+	DPU_FIELD(source, 0x44);
+	DPU_FIELD(destination, 0x48);
+	DPU_FIELD(stride, 0x4c);
+	DPU_FIELD(position, 0x50);
+	DPU_FIELD(alpha, 0x54);
+	DPU_FIELD(crop, 0x60);
+	DPU_FIELD(scaling, 0x234);
+	DPU_FIELD(enhancement, 0x500);
+	DPU_FIELD(vau_control, 0x1804);
+	DPU_FIELD(vau_start, 0x18a0);
+	DPU_FIELD(dpi, 0x260);
+	DPU_FIELD(h_timing, 0x264);
+	DPU_FIELD(v_timing, 0x268);
+#undef DPU_FIELD
+#define DSI_FIELD(field, offset) v->field = w202_reg_read(s, (offset))
+	DSI_FIELD(host_reset, DSI_SOFT_RESET);
+	DSI_FIELD(host_mode, DSI_MODE_CFG);
+	DSI_FIELD(format, DSI_DPI_VIDEO_FORMAT);
+	DSI_FIELD(packet, DSI_VIDEO_PKT_CONFIG);
+	DSI_FIELD(hblank, DSI_VIDEO_LINE_HBLK_TIME);
+	DSI_FIELD(line_time, DSI_VIDEO_LINE_TIME);
+	DSI_FIELD(vblank, DSI_VIDEO_VBLK_LINES);
+	DSI_FIELD(vactive, DSI_VIDEO_VACTIVE_LINES);
+	DSI_FIELD(hs_clock, DSI_PHY_CLK_LANE_LP_CTRL);
+	DSI_FIELD(phy_control, DSI_PHY_INTERFACE_CTRL);
+	DSI_FIELD(phy_status, DSI_PHY_STATUS);
+	DSI_FIELD(lanes, DSI_PHY_LANE_NUM_CONFIG);
+#undef DSI_FIELD
+	for (i = 0; i < ARRAY_SIZE(v->dsc); i++)
+		v->dsc[i] = readl(d->regs + W202_DPU_DSC_BASE + i * 4);
+}
+
+/* All checks precede ownership changes. In particular, an invalid snapshot
+ * never sends DSI packets, toggles reset GPIOs or blanks the backlight.
+ */
+int w202_dsi_adopt(struct w202_dpu *d)
+{
+	struct w202_dsi_state *s = d->dsi;
+	struct w202_inherited_display snapshot;
+	const char *reason = "display resources unavailable";
+	ktime_t deadline;
+	u64 vsyncs, errors;
+	u32 value;
+	unsigned int mode;
+	int ret = -EINVAL;
+
+	lockdep_assert_held(&d->hw_lock);
+	if (!s || !s->prepared || !s->dsi_clock_on)
+		return -ENODEV;
+	mutex_lock(&s->lock);
+	if (s->touched || s->active)
+		goto reject;
+	reason = "display clocks differ";
+	if (clk_get_rate(d->clks[3]) != 614400000 ||
+	    clk_get_rate(d->clks[4]) != 307200000)
+		goto reject;
+	reason = "panel reset is asserted or unreadable";
+	if (gpiod_get_value_cansleep(s->reset_gpio) != 1)
+		goto reject;
+	reason = "DSI host reset is asserted or unreadable";
+	if (regmap_read(s->dsi_reset_regmap, s->dsi_reset_reg, &value) ||
+	    (value & s->dsi_reset_mask))
+		goto reject;
+	reason = "DPHY power or gate is inactive";
+	if (regmap_read(s->dphy_power_regmap, s->dphy_power_reg, &value) ||
+	    (value & s->dphy_power_mask) ||
+	    regmap_read(s->dphy_enable_regmap, s->dphy_enable_reg, &value) ||
+	    (value & s->dphy_enable_mask) != s->dphy_enable_mask)
+		goto reject;
+	w202_inherited_snapshot(d, &snapshot);
+	reason = w202_inherited_display_check(&snapshot, &mode);
+	if (reason)
+		goto reject;
+	/* A cached RUN bit or PHY lock cannot prove panel scanout. Observe
+	 * two fresh frame interrupts after the old framebuffer writer stops.
+	 */
+	vsyncs = READ_ONCE(d->vsyncs);
+	errors = READ_ONCE(d->errors);
+	deadline = ktime_add_ms(ktime_get(), 100);
+	while (READ_ONCE(d->vsyncs) - vsyncs < 2) {
+		if (ktime_after(ktime_get(), deadline)) {
+			reason = "no continuing VSYNC";
+			ret = -ETIMEDOUT;
+			goto reject;
+		}
+		usleep_range(1000, 1500);
+	}
+	w202_inherited_snapshot(d, &snapshot);
+	reason = w202_inherited_display_check(&snapshot, &mode);
+	if (reason)
+		goto reject;
+	if (READ_ONCE(d->errors) != errors) {
+		reason = "DPU error during frame validation";
+		ret = -EIO;
+		goto reject;
+	}
+	drm_mode_copy(&d->mode, &d->modes[mode]);
+	d->preferred_mode = mode;
+	d->hw_initialized = true;
+	s->dphy_power_on = true;
+	s->dphy_gate_on = true;
+	/* touched denotes Linux ownership for subsequent DPMS operations. */
+	s->touched = true;
+	s->adopted = true;
+	s->active = true;
+	s->pll_freq_khz = 896000;
+	s->last_error = 0;
+	strscpy(s->state, "linux-adopted", sizeof(s->state));
+	drm_info(&d->drm,
+		 "retained DPU/DSI/DPHY/panel: refresh=%u Hz frames=%llu host_resets=0 panel_resets=0 commands=0\n",
+		 drm_mode_vrefresh(&d->mode), READ_ONCE(d->vsyncs) - vsyncs);
+	ret = 0;
+	goto out;
+reject:
+	drm_info(&d->drm, "display adoption declined: %s; trying full initialization\n", reason);
+out:
+	mutex_unlock(&s->lock);
+	return ret;
+}
+
 int w202_dsi_start(struct w202_dpu *d)
 {
 	struct w202_dsi_state *s;
@@ -862,6 +1003,7 @@ int w202_dsi_start(struct w202_dpu *d)
 				s->dsi_reset_mask, s->dsi_reset_mask);
 	if (ret)
 		goto fail_nodes;
+	s->host_resets++;
 	udelay(10);
 	ret = regmap_update_bits(s->dsi_reset_regmap, s->dsi_reset_reg,
 				s->dsi_reset_mask, 0);
@@ -915,6 +1057,7 @@ int w202_dsi_start(struct w202_dpu *d)
 	/* Vendor order: video mode, host state reset, continuous HS clock. */
 	strscpy(s->state, "video-handoff", sizeof(s->state));
 	w202_reg_write(s, DSI_MODE_CFG, 2);
+	s->soft_resets++;
 	w202_reg_write(s, DSI_SOFT_RESET, 0);
 	udelay(100);
 	w202_reg_write(s, DSI_SOFT_RESET, 1);
@@ -1101,6 +1244,7 @@ int w202_dsi_set_power(struct w202_dpu *d, bool on)
 		if (ret)
 			goto put_node;
 		w202_reg_write(s, DSI_MODE_CFG, 2);
+		s->soft_resets++;
 		w202_reg_write(s, DSI_SOFT_RESET, 0);
 		udelay(100);
 		w202_reg_write(s, DSI_SOFT_RESET, 1);
@@ -1158,9 +1302,11 @@ ssize_t w202_dsi_status(struct w202_dpu *d, char *buf)
 		phy = w202_reg_read(s, DSI_PHY_STATUS);
 		dsc = readl(d->regs + W202_DPU_DSC_BASE + W202_DSC_CTRL);
 	}
-	return sysfs_emit(buf, "state=%s error=%d stopped=%u commands=%u pll_khz=%u refresh_hz=%u vtotal=%u dsi_mode=%08x phy_status=%08x dsc_ctrl=%08x\n",
+	return sysfs_emit(buf, "state=%s error=%d stopped=%u commands=%u pll_khz=%u refresh_hz=%u vtotal=%u dsi_mode=%08x phy_status=%08x dsc_ctrl=%08x adopted=%u host_resets=%u panel_resets=%u soft_resets=%u\n",
 			  s ? s->state : "inherited", s ? s->last_error : 0,
 			  s ? s->dpu_stopped : 0, s ? s->command_count : 0,
 			  s ? s->pll_freq_khz : 0, drm_mode_vrefresh(&d->mode),
-			  d->mode.vtotal, mode, phy, dsc);
+			  d->mode.vtotal, mode, phy, dsc, s ? s->adopted : 0,
+			  s ? s->host_resets : 0, s ? s->panel_resets : 0,
+			  s ? s->soft_resets : 0);
 }
