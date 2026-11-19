@@ -10,6 +10,10 @@
 实际数值不变。GPU regulator 已在原导出树启用，不再依靠内核 `setup.c` 修补。
 必须将这份 DTB 与分离后的内核配对，不能换回未修供电的原厂 DTB。
 
+默认共享 CMA 池位于 `0xf0000000`，大小为 128 MiB，供显示连续缓冲和
+其他 DMA 使用；终点 `0xf8000000` 未覆盖后面的 rebootescrow/ramoops 保留区。
+此固定 DT 区域覆盖内核默认 CMA 大小，调整内核默认值不能替代更新 DTB。
+
 ```sh
 mkdir -p output/devicetree
 dtc -I dts -O dtb -o output/devicetree/w202ds-server.dtb devicetree/w202ds-server.dts

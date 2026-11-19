@@ -67,7 +67,8 @@
 		};
 		cma_share@f00000000 {
 			compatible = "shared-dma-pool";
-			reg = <0x00 0xf0000000 0x00 0x3000000>;
+			// Reserve 128 MiB for compositor scanout and multi-buffering.
+			reg = <0x00 0xf0000000 0x00 0x8000000>;
 			reusable;
 			linux,cma-default;
 			phandle = <0x207>;
