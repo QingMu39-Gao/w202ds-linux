@@ -57,6 +57,8 @@ struct drm_atomic_state {
 };
 static struct drm_crtc crtc;
 static struct drm_crtc_commit commit;
+static bool aux_planes, modeset_enabled;
+static unsigned hardware_updates;
 static bool scanout, stop_after_flip, delayed_event, hw_done, injected;
 static unsigned vblank_timeouts, flip_timeouts, delayed_completions, cleaned;
 
@@ -117,8 +119,9 @@ static void drm_atomic_helper_commit_planes(struct drm_device *d,
 {
     (void)d;
     assert(flags == 0);
-    if (s->new_state.active) {
+    if (s->new_state.active && !aux_planes) {
         scanout = true;
+        hardware_updates++;
         if (!delayed_event)
             complete_all(&commit.flip_done); /* layer-update IRQ */
     }
@@ -127,7 +130,20 @@ static void drm_atomic_helper_commit_modeset_enables(struct drm_device *d,
                                                     struct drm_atomic_state *s)
 {
     (void)d;
+    if (aux_planes && s->new_state.active)
+        scanout = true;
     assert(!s->new_state.active || scanout);
+    modeset_enabled = true;
+}
+static void w202_commit_aux_planes(struct drm_atomic_state *s)
+{
+    assert(modeset_enabled && !hw_done);
+    if (!s->new_state.active)
+        return;
+    assert(scanout && !hardware_updates);
+    hardware_updates++;
+    if (!delayed_event)
+        complete_all(&commit.flip_done);
 }
 static void drm_atomic_helper_fake_vblank(struct drm_atomic_state *s) { (void)s; }
 static void drm_atomic_helper_commit_hw_done(struct drm_atomic_state *s)
@@ -160,6 +176,8 @@ static void run(void (*tail)(struct drm_atomic_state *), bool old_active,
     scanout = old_active;
     stop_after_flip = dpms;
     delayed_event = delay;
+    modeset_enabled = false;
+    hardware_updates = 0;
     hw_done = injected = false;
     vblank_timeouts = flip_timeouts = delayed_completions = cleaned = 0;
     if (!old_active && !active)
@@ -167,6 +185,7 @@ static void run(void (*tail)(struct drm_atomic_state *), bool old_active,
     tail(&state);
     assert(cleaned == 1);
     assert(flip_timeouts == 0);
+    assert(hardware_updates == (unsigned)active);
 }
 int main(void)
 {
@@ -191,6 +210,16 @@ int main(void)
     run(drm_atomic_helper_commit_tail, true, true, false, false);
     assert(vblank_timeouts == 0);
     puts("PASS: baseline has no timeout while scanout keeps running");
+    aux_planes = true;
+    run(w202_atomic_commit_tail, false, true, false, false);
+    assert(scanout && vblank_timeouts == 0);
+    run(w202_atomic_commit_tail, true, true, false, true);
+    assert(injected && vblank_timeouts == 0);
+    run(w202_atomic_commit_tail, true, true, true, false);
+    assert(delayed_completions == 1);
+    run(w202_atomic_commit_tail, true, false, false, false);
+    assert(!scanout);
+    puts("PASS: auxiliary planes latch once after modeset and complete before cleanup");
     return 0;
 }
 '''

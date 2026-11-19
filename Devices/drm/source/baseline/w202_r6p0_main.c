@@ -31,16 +31,18 @@
 #include <drm/drm_fb_helper.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
+#include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_prime.h>
+#include <drm/drm_rect.h>
 #include <drm/drm_simple_kms_helper.h>
 #include <drm/drm_vblank.h>
 #include "w202_r6p0.h"
-#include "w202_rotation.h"
+#include "w202_layers.h"
 
 #define CTRL 0x08
 #define LAYER_ENABLE 0x2c
@@ -51,11 +53,15 @@
 #define LAY_DONE BIT(18)
 #define W202_LATCH BIT(4)
 #define W202_ERROR_IRQS (BIT(2) | BIT(6) | BIT(7) | BIT(8))
+#define W202_CURSOR_SIZE 64
 static bool flip_after_latch = true;
 static bool defer_modeset = true;
+static bool aux_planes;
+module_param(aux_planes, bool, 0444);
+MODULE_PARM_DESC(aux_planes, "Expose experimental r6p0 overlay and cursor KMS planes (default false)");
 /* Board installation correction, clockwise in input coordinates. Logical
  * KMS coordinates are already landscape; userspace rotation starts at zero.
- * r6p0's clockwise source rotation is the inverse of this input correction.
+ * The native scanout rotation is the inverse of this input correction.
  */
 static unsigned int mount_rotation = 270;
 module_param(mount_rotation, uint, 0444);
@@ -371,56 +377,226 @@ static int w202_atomic_check(struct drm_device *drm,
 	/* Also reject disable-only commits which do not call plane .check. */
 	if (!READ_ONCE(d->scanout_allowed) || !READ_ONCE(d->display_ready))
 		return -EBUSY;
+	if (aux_planes) {
+		struct drm_plane *planes[] = { &d->pipe.plane, &d->overlay, &d->cursor };
+		struct drm_crtc_state *crtc_state;
+		struct drm_plane_state *plane_state;
+		unsigned int i;
+
+		/* One hardware latch covers all layers. Duplicate even untouched
+		 * layer states so the commit tail never reads a later commit's state.
+		 */
+		crtc_state = drm_atomic_get_crtc_state(state, &d->pipe.crtc);
+		if (IS_ERR(crtc_state))
+			return PTR_ERR(crtc_state);
+		for (i = 0; i < ARRAY_SIZE(planes); i++) {
+			plane_state = drm_atomic_get_plane_state(state, planes[i]);
+			if (IS_ERR(plane_state))
+				return PTR_ERR(plane_state);
+		}
+	}
 	return drm_atomic_helper_check(drm, state);
 }
-static void w202_update(struct drm_simple_display_pipe *pipe,
-			struct drm_plane_state *old)
+
+static int w202_aux_check(struct drm_plane *plane, struct drm_atomic_state *state)
 {
-	struct w202_dpu *d = to_w202(pipe->crtc.dev);
-	struct drm_plane_state *state = pipe->plane.state;
-	struct drm_framebuffer *fb = state->fb;
+	struct drm_plane_state *ps = drm_atomic_get_new_plane_state(state, plane);
+	struct drm_framebuffer *fb = ps->fb;
+	struct drm_crtc_state *crtc_state;
 	struct drm_gem_dma_object *obj;
+	unsigned int cpp;
+	int ret;
+
+	if (!ps->crtc || !fb) {
+		ps->visible = false;
+		return 0;
+	}
+	crtc_state = drm_atomic_get_new_crtc_state(state, ps->crtc);
+	ret = drm_atomic_helper_check_plane_state(ps, crtc_state,
+			DRM_PLANE_NO_SCALING, DRM_PLANE_NO_SCALING, true, false);
+	if (ret || !ps->visible)
+		return ret;
+
+	cpp = fb->format->cpp[0];
+	obj = drm_fb_dma_get_gem_obj(fb, 0);
+	/* r6p0 takes a 16-byte aligned 32-bit DMA base and integer crop.
+	 * Keep the existing display-owned BO restriction for all layers.
+	 */
+	if (fb->modifier != DRM_FORMAT_MOD_LINEAR || fb->offsets[0] ||
+	    !cpp || fb->pitches[0] % cpp || fb->pitches[0] / cpp > 0x7fff ||
+	    ((ps->src.x1 | ps->src.y1 | ps->src.x2 | ps->src.y2) & 0xffff) ||
+	    !obj || !IS_ALIGNED(obj->dma_addr, 16) || upper_32_bits(obj->dma_addr) ||
+	    (u64)obj->dma_addr + (u64)(fb->height - 1) * fb->pitches[0] +
+	    (u64)fb->width * cpp > BIT_ULL(32))
+		return -EINVAL;
+	if (plane->type == DRM_PLANE_TYPE_CURSOR &&
+	    (fb->width > W202_CURSOR_SIZE || fb->height > W202_CURSOR_SIZE))
+		return -EINVAL;
+	return 0;
+}
+
+static void w202_aux_update(struct drm_plane *plane, struct drm_atomic_state *state)
+{
+	/* Required by the DRM helper. The shared commit tail writes and
+	 * latches all active layers together, after the modeset is enabled.
+	 */
+}
+
+static const struct drm_plane_helper_funcs w202_aux_plane_helpers = {
+	.prepare_fb = drm_gem_plane_helper_prepare_fb,
+	.atomic_check = w202_aux_check,
+	.atomic_update = w202_aux_update,
+};
+
+static const struct drm_plane_funcs w202_aux_plane_funcs = {
+	.update_plane = drm_atomic_helper_update_plane,
+	.disable_plane = drm_atomic_helper_disable_plane,
+	.destroy = drm_plane_cleanup,
+	.reset = drm_atomic_helper_plane_reset,
+	.atomic_duplicate_state = drm_atomic_helper_plane_duplicate_state,
+	.atomic_destroy_state = drm_atomic_helper_plane_destroy_state,
+};
+
+static int w202_init_aux_plane(struct w202_dpu *d, struct drm_plane *plane,
+			       enum drm_plane_type type, unsigned int layer)
+{
+	static const u32 rgb[] = { DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888 };
+	const unsigned int count = type == DRM_PLANE_TYPE_CURSOR ? 1 : ARRAY_SIZE(rgb);
+	int ret;
+
+	ret = drm_universal_plane_init(&d->drm, plane, drm_crtc_mask(&d->pipe.crtc),
+			&w202_aux_plane_funcs, rgb, count, NULL, type, NULL);
+	if (ret)
+		return ret;
+	drm_plane_helper_add(plane, &w202_aux_plane_helpers);
+	ret = drm_plane_create_zpos_immutable_property(plane, layer);
+	if (ret)
+		return ret;
+	return drm_plane_create_blend_mode_property(plane,
+			BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_PIXEL_NONE));
+}
+
+static void w202_write_layer(struct w202_dpu *d, unsigned int layer,
+			     u32 dma, u32 ctrl, u32 size, u32 pitch, u32 pos, u32 crop)
+{
+	void __iomem *regs = d->regs + layer * W202_LAY_STRIDE;
+
+	writel(dma, regs + W202_LAY_ADDR);
+	writel(ctrl, regs + W202_LAY_CTRL);
+	/* The no-scale destination dimensions are expressed before rotation. */
+	writel(size, regs + W202_LAY_DST_SIZE);
+	writel(size, regs + W202_LAY_SRC_SIZE);
+	writel(pitch, regs + W202_LAY_PITCH);
+	writel(pos, regs + W202_LAY_POS);
+	writel(0xff, regs + W202_LAY_ALPHA);
+	writel(crop, regs + W202_LAY_CROP);
+}
+
+static bool w202_write_aux(struct w202_dpu *d, struct drm_plane_state *ps,
+			   const struct drm_display_mode *mode, unsigned int layer)
+{
+	struct drm_framebuffer *fb;
+	struct drm_gem_dma_object *obj;
+	struct drm_rect dst;
+	u32 ctrl, rotation, crop, size;
+
+	if (!ps || !ps->visible) {
+		writel(0, d->regs + layer * W202_LAY_STRIDE + W202_LAY_CTRL);
+		return false;
+	}
+	fb = ps->fb;
+	obj = drm_fb_dma_get_gem_obj(fb, 0);
+	rotation = w202_rotation_code(0, mount_rotation);
+	ctrl = (rotation << W202_LAY_ROTATION_SHIFT) | W202_LAY_ARGB8888;
+	if (fb->format->has_alpha && ps->pixel_blend_mode == DRM_MODE_BLEND_PREMULTI)
+		ctrl |= W202_LAY_COMBO_ALPHA | W202_LAY_PREMULT;
+	else
+		ctrl |= W202_LAY_CONST_ALPHA;
+	/* Use the same rotation for the native destination and buffer.
+	 * The source crop stays in framebuffer coordinates.
+	 */
+	dst = ps->dst;
+	drm_rect_rotate(&dst, mode->hdisplay, mode->vdisplay,
+			DRM_MODE_ROTATE_0 << rotation);
+	crop = w202_pair(ps->src.x1 >> 16, ps->src.y1 >> 16);
+	size = w202_pair(drm_rect_width(&ps->src) >> 16, drm_rect_height(&ps->src) >> 16);
+	w202_write_layer(d, layer, lower_32_bits(obj->dma_addr), ctrl, size,
+			 fb->pitches[0] / fb->format->cpp[0],
+			 w202_pair(dst.x1, dst.y1), crop);
+	return true;
+}
+
+static void w202_finish_flip(struct drm_crtc_state *crtc_state, bool latched,
+			     bool vblank_ref)
+{
+	struct drm_crtc *crtc = crtc_state->crtc;
 	struct drm_pending_vblank_event *event;
 	unsigned long flags;
-	u32 ctrl;
+
+	spin_lock_irqsave(&crtc->dev->event_lock, flags);
+	event = crtc_state->event;
+	if (event) {
+		crtc_state->event = NULL;
+		/* IRQ18 reports the layer shadow update. Report this frame
+		 * instead of adding a frame of latency by arming another vblank.
+		 */
+		if (!vblank_ref || (latched && READ_ONCE(flip_after_latch))) {
+			drm_crtc_send_vblank_event(crtc, event);
+		} else {
+			drm_crtc_arm_vblank_event(crtc, event);
+			vblank_ref = false; /* arm transfers the reference */
+		}
+	}
+	spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
+	if (vblank_ref)
+		drm_crtc_vblank_put(crtc);
+}
+
+static void w202_commit_layers(struct w202_dpu *d, struct drm_crtc_state *crtc_state,
+			       struct drm_plane_state *state, struct drm_plane_state *overlay,
+			       struct drm_plane_state *cursor)
+{
+	struct drm_crtc *crtc = &d->pipe.crtc;
+	struct drm_framebuffer *fb = state ? state->fb : NULL;
+	struct drm_gem_dma_object *obj;
+	u32 ctrl, rotation, mask = BIT(W202_LAY_PRIMARY);
 	bool latched, vblank_ref;
 	int ret;
 	/* DPMS can retain a framebuffer on an inactive CRTC. Updating that
 	 * plane must not wake the panel after the disable callback. */
 	if (!READ_ONCE(d->scanout_allowed) || !READ_ONCE(d->display_ready) ||
-	    !fb || !state->crtc || !state->crtc->state->active) return;
+	    !fb || !state->crtc || !crtc_state->active)
+		goto skip;
 	obj = drm_fb_dma_get_gem_obj(fb, 0);
-	if (WARN_ON_ONCE(upper_32_bits(obj->dma_addr))) return;
+	if (WARN_ON_ONCE(!obj || upper_32_bits(obj->dma_addr)))
+		goto skip;
 	/* Keep vblank accounting active before the latch IRQ. Without this
 	 * reference DRM may disable accounting while the desktop is idle,
 	 * leaving an immediate event with an old presentation timestamp. */
-	vblank_ref = !drm_crtc_vblank_get(&pipe->crtc);
+	vblank_ref = !drm_crtc_vblank_get(crtc);
 	mutex_lock(&d->hw_lock);
 	ret = w202_dsi_set_power(d, true);
 	if (ret) {
 		drm_err(&d->drm, "cannot wake panel for commit: %d\n", ret);
 		mutex_unlock(&d->hw_lock);
 		if (vblank_ref)
-			drm_crtc_vblank_put(&pipe->crtc);
-		return;
+			drm_crtc_vblank_put(crtc);
+		goto skip;
 	}
-	/* DRM rotations are counterclockwise; r6p0 source codes clockwise.
-	 * Compose against installation correction, without CPU pixel rotation. */
-	ctrl = (w202_rotation_code(__ffs(state->rotation & DRM_MODE_ROTATE_MASK),
-			    mount_rotation) << 20) | BIT(2);
-	ctrl |= fb->format->format == DRM_FORMAT_RGB565 ? 0x40 : 0x30;
-	writel(lower_32_bits(obj->dma_addr), d->regs + 0x30);
-	writel(ctrl, d->regs + 0x40);
-	/* r6p0 size registers describe the image before rotation. With no
-	 * scaling both use the source size, including for quarter turns.
-	 */
-	writel(fb->height << 16 | fb->width, d->regs + 0x44);
-	writel(fb->height << 16 | fb->width, d->regs + 0x48);
-	writel(fb->pitches[0] / fb->format->cpp[0], d->regs + 0x4c);
-	writel(0, d->regs + 0x50);
-	writel(0xff, d->regs + 0x54);
-	writel(0, d->regs + 0x60);
-	writel(1, d->regs + LAYER_ENABLE);
+	/* Compose the KMS request with the same mounting correction. */
+	rotation = w202_rotation_code(__ffs(state->rotation & DRM_MODE_ROTATE_MASK),
+				      mount_rotation);
+	ctrl = (rotation << W202_LAY_ROTATION_SHIFT) | W202_LAY_CONST_ALPHA;
+	ctrl |= fb->format->format == DRM_FORMAT_RGB565 ? W202_LAY_RGB565 : W202_LAY_ARGB8888;
+	w202_write_layer(d, W202_LAY_PRIMARY, lower_32_bits(obj->dma_addr), ctrl,
+			 w202_pair(fb->width, fb->height), fb->pitches[0] / fb->format->cpp[0], 0, 0);
+	if (aux_planes) {
+		if (w202_write_aux(d, overlay, &crtc_state->mode, W202_LAY_OVERLAY))
+			mask |= BIT(W202_LAY_OVERLAY);
+		if (w202_write_aux(d, cursor, &crtc_state->mode, W202_LAY_CURSOR))
+			mask |= BIT(W202_LAY_CURSOR);
+	}
+	writel(mask, d->regs + LAYER_ENABLE);
 	latched = w202_latch(d);
 	if (latched && !d->first_frame_visible) {
 		ret = backlight_enable(d->backlight);
@@ -433,26 +609,20 @@ static void w202_update(struct drm_simple_display_pipe *pipe,
 	mutex_unlock(&d->hw_lock);
 	drm_dbg(&d->drm, "commit=%llu dma=%pad hwaddr=%08x updates=%llu vsyncs=%llu\n",
 		d->commits, &obj->dma_addr, readl(d->regs + 0x30), d->updates, d->vsyncs);
-	spin_lock_irqsave(&pipe->crtc.dev->event_lock, flags);
-	event = pipe->crtc.state->event;
-	if (event) {
-		pipe->crtc.state->event = NULL;
-		/* IRQ18 reports completion of the layer shadow update. Once it
-		 * has completed, report this frame using the current sequence;
-		 * arming another vblank here adds a whole frame of latency.
-		 * Keep the old path selectable for measured A/B verification.
-		 */
-		if (latched && vblank_ref && READ_ONCE(flip_after_latch))
-			drm_crtc_send_vblank_event(&pipe->crtc, event);
-		else if (vblank_ref) {
-			drm_crtc_arm_vblank_event(&pipe->crtc, event);
-			vblank_ref = false; /* arm transfers the reference */
-		} else
-			drm_crtc_send_vblank_event(&pipe->crtc, event);
-	}
-	spin_unlock_irqrestore(&pipe->crtc.dev->event_lock, flags);
-	if (vblank_ref)
-		drm_crtc_vblank_put(&pipe->crtc);
+	w202_finish_flip(crtc_state, latched, vblank_ref);
+	return;
+
+skip:
+	if (aux_planes)
+		w202_finish_flip(crtc_state, false, false);
+}
+
+static void w202_update(struct drm_simple_display_pipe *pipe,
+			struct drm_plane_state *old)
+{
+	if (!aux_planes)
+		w202_commit_layers(to_w202(pipe->crtc.dev), pipe->crtc.state,
+				   pipe->plane.state, NULL, NULL);
 }
 static void w202_enable(struct drm_simple_display_pipe *pipe,
 		       struct drm_crtc_state *crtc, struct drm_plane_state *plane)
@@ -478,7 +648,7 @@ static void w202_enable(struct drm_simple_display_pipe *pipe,
 static void w202_disable(struct drm_simple_display_pipe *pipe)
 {
 	struct w202_dpu *d = to_w202(pipe->crtc.dev);
-	unsigned long flags;
+	struct drm_crtc_state *crtc_state = pipe->crtc.state;
 	int ret;
 
 	if (!READ_ONCE(d->scanout_allowed) || !READ_ONCE(d->display_ready))
@@ -486,7 +656,7 @@ static void w202_disable(struct drm_simple_display_pipe *pipe)
 	mutex_lock(&d->hw_lock);
 	/* An active new CRTC state means a modeset, not DPMS blank.
 	 * Preserve the panel and touch firmware; enable updates the timings. */
-	ret = pipe->crtc.state->active ? 0 : w202_dsi_set_power(d, false);
+	ret = crtc_state->active ? 0 : w202_dsi_set_power(d, false);
 	if (ret)
 		drm_err(&d->drm, "DRM disable failed to put panel in standby: %d\n", ret);
 	/* No LK framebuffer restoration: the DRM fbdev client restores its
@@ -495,14 +665,10 @@ static void w202_disable(struct drm_simple_display_pipe *pipe)
 	mutex_unlock(&d->hw_lock);
 	drm_crtc_vblank_off(&pipe->crtc);
 	/* A disable commit has no plane update to consume its synthetic event.
-	 * Finish that commit after the scanout has stopped.
+	 * An active modeset with aux planes completes at the layer latch.
 	 */
-	spin_lock_irqsave(&pipe->crtc.dev->event_lock, flags);
-	if (pipe->crtc.state->event) {
-		drm_crtc_send_vblank_event(&pipe->crtc, pipe->crtc.state->event);
-		pipe->crtc.state->event = NULL;
-	}
-	spin_unlock_irqrestore(&pipe->crtc.dev->event_lock, flags);
+	if (!aux_planes || !crtc_state->active)
+		w202_finish_flip(crtc_state, false, false);
 	drm_info(&d->drm, "DRM CRTC disabled: commits=%llu updates=%llu vsyncs=%llu\n",
 		d->commits, d->updates, d->vsyncs);
 }
@@ -545,6 +711,20 @@ static const struct drm_mode_config_funcs config_funcs = {
 	.atomic_commit = drm_atomic_helper_commit,
 };
 
+static void w202_commit_aux_planes(struct drm_atomic_state *state)
+{
+	struct w202_dpu *d = to_w202(state->dev);
+	struct drm_crtc_state *crtc_state;
+
+	crtc_state = drm_atomic_get_new_crtc_state(state, &d->pipe.crtc);
+	if (!crtc_state)
+		return;
+	w202_commit_layers(d, crtc_state,
+			drm_atomic_get_new_plane_state(state, &d->pipe.plane),
+			drm_atomic_get_new_plane_state(state, &d->overlay),
+			drm_atomic_get_new_plane_state(state, &d->cursor));
+}
+
 static void w202_atomic_commit_tail(struct drm_atomic_state *state)
 {
 	struct drm_device *dev = state->dev;
@@ -552,6 +732,8 @@ static void w202_atomic_commit_tail(struct drm_atomic_state *state)
 	drm_atomic_helper_commit_modeset_disables(dev, state);
 	drm_atomic_helper_commit_planes(dev, state, 0);
 	drm_atomic_helper_commit_modeset_enables(dev, state);
+	if (aux_planes)
+		w202_commit_aux_planes(state);
 	drm_atomic_helper_fake_vblank(state);
 	drm_atomic_helper_commit_hw_done(state);
 	/* The layer-update IRQ has already retired the old framebuffer when
@@ -604,7 +786,11 @@ static int w202_probe(struct platform_device *pdev)
 {
 	static const char * const names[] = { "clk_dpuvsp_eb", "clk_dpuvsp_disp_eb",
 		"clk_master_div6_eb", "clk_dpu_core", "clk_dpu_dpi" };
-	static const u32 formats[] = { DRM_FORMAT_RGB565, DRM_FORMAT_XRGB8888 };
+	/* r6p0 uses the same 32-bit format code for ARGB and XRGB. This
+	 * opaque primary layer uses constant alpha (BIT(2), alpha=0xff). */
+	static const u32 formats[] = {
+		DRM_FORMAT_RGB565, DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888,
+	};
 	struct device_node *np, *pd;
 	struct regmap *pmu;
 	struct w202_dpu *d;
@@ -649,9 +835,12 @@ static int w202_probe(struct platform_device *pdev)
 	ret = drmm_mode_config_init(&d->drm); if (ret) goto out_nodes;
 	d->drm.mode_config.funcs = &config_funcs;
 	d->drm.mode_config.helper_private = &config_helpers;
-	/* Rotated framebuffers swap dimensions; panel timings stay native. */
-	d->drm.mode_config.min_width = d->drm.mode_config.min_height = 1200;
-	d->drm.mode_config.max_width = d->drm.mode_config.max_height = 1920;
+	/* These limits govern ADDFB2 allocation too, including compositor
+	 * cursor/probe buffers. Actual scanout dimensions, pitch and rotation
+	 * remain constrained by w202_check(); do not impose panel size here.
+	 * Match the r6p0 vendor driver's global framebuffer limits. */
+	d->drm.mode_config.min_width = d->drm.mode_config.min_height = 0;
+	d->drm.mode_config.max_width = d->drm.mode_config.max_height = 8192;
 	ret = drm_connector_init(&d->drm, &d->connector, &connector_funcs, DRM_MODE_CONNECTOR_DSI);
 	if (ret) goto out_nodes;
 	drm_connector_helper_add(&d->connector, &connector_helpers);
@@ -667,6 +856,17 @@ static int w202_probe(struct platform_device *pdev)
 	ret = drm_plane_create_rotation_property(&d->pipe.plane,
 		DRM_MODE_ROTATE_0, DRM_MODE_ROTATE_MASK);
 	if (ret) goto out_nodes;
+	if (aux_planes) {
+		ret = drm_plane_create_zpos_immutable_property(&d->pipe.plane, W202_LAY_PRIMARY);
+		if (ret) goto out_nodes;
+		ret = w202_init_aux_plane(d, &d->overlay, DRM_PLANE_TYPE_OVERLAY, W202_LAY_OVERLAY);
+		if (ret) goto out_nodes;
+		ret = w202_init_aux_plane(d, &d->cursor, DRM_PLANE_TYPE_CURSOR, W202_LAY_CURSOR);
+		if (ret) goto out_nodes;
+		d->pipe.crtc.cursor = &d->cursor;
+		d->drm.mode_config.cursor_width = W202_CURSOR_SIZE;
+		d->drm.mode_config.cursor_height = W202_CURSOR_SIZE;
+	}
 	drm_mode_config_reset(&d->drm);
 	ret = drm_vblank_init(&d->drm, 1); if (ret) goto out_nodes;
 	d->irq = irq_of_parse_and_map(np, 0);

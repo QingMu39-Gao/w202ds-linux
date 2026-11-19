@@ -17,6 +17,8 @@ struct backlight_device;
 struct w202_dpu {
 	struct drm_device drm;
 	struct drm_simple_display_pipe pipe;
+	struct drm_plane overlay;
+	struct drm_plane cursor;
 	struct drm_connector connector;
 	struct drm_display_mode mode;
 	struct drm_display_mode modes[2];
