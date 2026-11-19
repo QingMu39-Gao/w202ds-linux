@@ -2,9 +2,9 @@
 ACTION=="remove", GOTO="w202_sensorhub_end"
 SUBSYSTEM!="iio", GOTO="w202_sensorhub_end"
 
-# The LSM6DSOQ sits rotated 180 degrees in the panel plane relative to the panel's native portrait axes:
-# in the keyboard stand it reads gravity on +X with Z toward the viewer.
-# This yields right-up for the existing landscape panel configuration; physical rotation is still to verify.
-ATTR{name}=="w202-lsm6dsoq", ENV{ACCEL_MOUNT_MATRIX}="-1, 0, 0; 0, -1, 0; 0, 0, 1"
+# Match the DRM connector's logical landscape axes, after its mounting correction.
+# In the keyboard stand raw gravity is +X: map it to -Y (normal / logical 0).
+# This is sensor mounting metadata, not an extra display or touch rotation.
+ATTR{name}=="w202-lsm6dsoq", ENV{ACCEL_MOUNT_MATRIX}="0, 1, 0; -1, 0, 0; 0, 0, 1"
 
 LABEL="w202_sensorhub_end"
