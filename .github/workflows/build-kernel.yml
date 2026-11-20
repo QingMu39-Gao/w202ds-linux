@@ -1,0 +1,163 @@
+name: build-w202ds-kernel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["6.18.35"]
+
+concurrency:
+  group: build-w202ds-kernel
+  cancel-in-progress: true
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Submodule fallback (disable shallow if pinned fetch failed)
+        run: |
+          git submodule status
+          if ! git submodule status | grep -q '^ '; then
+            echo "some submodule not initialized, retry without shallow"
+            git config submodule.kernel.shallow false || true
+            git submodule update --init --recursive
+          fi
+          git submodule status
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            device-tree-compiler kmod flex bison bc \
+            libssl-dev libelf-dev cpio make python3
+
+      - name: Build kernel + modules (debug profile)
+        run: |
+          export LOCALVERSION=
+          python3 -B scripts/build.py --profile debug \
+            --kernel-out output/kernel-debug --jobs "$(nproc)" all
+          mkdir -p output/devicetree
+          dtc -I dts -O dtb -o output/devicetree/w202ds-server.dtb \
+            devicetree/w202ds-server.dts
+          ls -la output/kernel-debug/arch/arm64/boot/Image
+          ls -la output/devicetree/
+
+      - name: Export prepared kernel (for cross-machine module builds)
+        continue-on-error: true
+        run: |
+          python3 -B scripts/kernel-export.py --out output/kernel-debug \
+            --kernel kernel --archive output/w202ds-kernel-debug.tar.gz
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: w202ds-kernel-debug
+          if-no-files-found: error
+          path: |
+            output/kernel-debug/arch/arm64/boot/Image
+            output/kernel-debug/kernel-state.json
+            output/kernel-debug/kernel-build.json
+            output/devicetree/w202ds-server.dtb
+            output/w202ds-kernel-debug.tar.gz
+            output/kernel-debug/modules/
+
+  userspace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc g++ make python3 pkg-config
+
+      - name: Native tests
+        run: |
+          make -C Devices -f userspace.mk OUT="$PWD/output/userspace/tests" check
+
+      - name: Build board userspace (arm64)
+        run: |
+          make -C Devices -f userspace.mk OUT="$PWD/output/userspace/arm64" all
+
+      - name: Stage userspace rootfs overlay
+        run: |
+          make -C Devices -f userspace.mk OUT="$PWD/output/userspace/arm64" \
+            DESTDIR="$PWD/output/userspace/rootfs" install
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: w202ds-userspace
+          if-no-files-found: warn
+          path: output/userspace/
+
+  initramfs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Fetch arm64 busybox-static from Ubuntu ports
+        run: |
+          curl -s http://ports.ubuntu.com/ubuntu-ports/dists/noble/main/binary-arm64/Packages.gz \
+            | zcat | awk '
+              /^Package: busybox-static$/ {p=1}
+              p && /^Filename:/ {print $2; exit}'
+          FN=$(curl -s http://ports.ubuntu.com/ubuntu-ports/dists/noble/main/binary-arm64/Packages.gz \
+            | zcat | awk '/^Package: busybox-static$/ {p=1} p && /^Filename:/ {print $2; exit}')
+          echo "busybox deb: $FN"
+          curl -sfL "http://ports.ubuntu.com/ubuntu-ports/$FN" -o busybox.deb
+          dpkg-deb -x busybox.deb rootfs
+
+      - name: Assemble test initramfs
+        run: |
+          mkdir -p rootfs/bin rootfs/sbin rootfs/proc rootfs/sys rootfs/run rootfs/dev
+          cp rootfs/bin/busybox rootfs/bin/busybox
+          cat > rootfs/init <<'EOF'
+          #!/bin/busybox sh
+          export PATH=/bin:/sbin
+          /bin/busybox --install -s /bin
+          mount -t devtmpfs devtmpfs /dev
+          exec </dev/console >/dev/console 2>&1
+          mount -t proc proc /proc
+          mount -t sysfs sysfs /sys
+          mount -t tmpfs tmpfs /run
+          echo "====================================================="
+          echo " W200DS slot-B boot test initramfs arrived!"
+          echo "====================================================="
+          uname -a
+          cat /proc/device-tree/model 2>/dev/null; echo
+          echo "--- cmdline ---"
+          cat /proc/cmdline
+          echo "--- block devices ---"
+          ls /dev/block/by-name/ 2>/dev/null | tr '\n' ' ' | head -c 400; echo
+          echo "--- kmsg tail ---"
+          dmesg | tail -40
+          echo "=== rescue shell: type commands; reboot -f to leave ==="
+          while :; do
+            setsid cttyhack sh
+            echo "shell exited; restarting"
+          done
+          EOF
+          chmod +x rootfs/init
+          (cd rootfs && find . | cpio -o -H newc --owner=0:0 | gzip -9) > ramdisk.cpio.gz
+          ls -la ramdisk.cpio.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: w202ds-test-initramfs
+          if-no-files-found: error
+          path: ramdisk.cpio.gz
